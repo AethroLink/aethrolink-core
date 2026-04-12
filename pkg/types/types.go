@@ -293,6 +293,8 @@ type RuntimeAdapter interface {
 	Resume(ctx context.Context, handle RemoteHandle, payload map[string]any) error
 	Cancel(ctx context.Context, handle RemoteHandle) error
 	Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error)
+	RehydrateHandle(task TaskRecord, spec RuntimeSpec) (RemoteHandle, error)
+	SubcontextKey(spec RuntimeSpec, runtimeOptions map[string]any) string
 }
 
 type TransportAdapter interface {
