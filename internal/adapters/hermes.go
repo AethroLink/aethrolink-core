@@ -11,29 +11,29 @@ import (
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
 
-type hermesRealRun struct {
+type hermesRun struct {
 	events chan atypes.TaskEvent
 	errs   chan error
 }
 
-type HermesRealAdapter struct {
+type HermesAdapter struct {
 	registry *config.RegistryDiscovery
 	runtime  *runtime.Manager
 	mu       sync.Mutex
-	runs     map[string]*hermesRealRun
+	runs     map[string]*hermesRun
 }
 
-func NewHermesRealAdapter(registry *config.RegistryDiscovery, runtimeManager *runtime.Manager) *HermesRealAdapter {
-	return &HermesRealAdapter{registry: registry, runtime: runtimeManager, runs: map[string]*hermesRealRun{}}
+func NewHermesAdapter(registry *config.RegistryDiscovery, runtimeManager *runtime.Manager) *HermesAdapter {
+	return &HermesAdapter{registry: registry, runtime: runtimeManager, runs: map[string]*hermesRun{}}
 }
 
-func (a *HermesRealAdapter) AdapterName() string { return "hermes_real" }
+func (a *HermesAdapter) AdapterName() string { return "hermes" }
 
-func (a *HermesRealAdapter) Capabilities(context.Context) (map[string]any, error) {
-	return map[string]any{"adapter": "hermes_real", "mode": "real_hermes_acp"}, nil
+func (a *HermesAdapter) Capabilities(context.Context) (map[string]any, error) {
+	return map[string]any{"adapter": "hermes", "mode": "real_hermes_acp"}, nil
 }
 
-func (a *HermesRealAdapter) EnsureReady(ctx context.Context, runtimeID string, options map[string]any) (atypes.RuntimeLease, error) {
+func (a *HermesAdapter) EnsureReady(ctx context.Context, runtimeID string, options map[string]any) (atypes.RuntimeLease, error) {
 	spec, err := a.registry.ResolveRuntime(ctx, runtimeID)
 	if err != nil {
 		return atypes.RuntimeLease{}, err
@@ -44,17 +44,17 @@ func (a *HermesRealAdapter) EnsureReady(ctx context.Context, runtimeID string, o
 	}
 	command := spec.Launch.Commands[profile]
 	if len(command) == 0 {
-		return atypes.RuntimeLease{}, fmt.Errorf("missing real hermes command for profile %s", profile)
+		return atypes.RuntimeLease{}, fmt.Errorf("missing hermes command for profile %s", profile)
 	}
 	returnLease, _, err := a.runtime.EnsureStdioWorker(ctx, runtimeID, "profile:"+profile, command)
 	return returnLease, err
 }
 
-func (a *HermesRealAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
+func (a *HermesAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
 	profile := lease.SubcontextKey[len("profile:"):]
 	worker := a.runtime.GetStdioWorker(task.TargetRuntime, lease.SubcontextKey)
 	if worker == nil {
-		return atypes.RemoteHandle{}, fmt.Errorf("missing real hermes worker")
+		return atypes.RemoteHandle{}, fmt.Errorf("missing hermes worker")
 	}
 	if _, err := worker.RequestWithTimeout("initialize", map[string]any{"protocolVersion": 1}, 20*time.Second); err != nil {
 		return atypes.RemoteHandle{}, err
@@ -69,9 +69,9 @@ func (a *HermesRealAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope
 	}
 	sessionID, _ := result["sessionId"].(string)
 	if sessionID == "" {
-		return atypes.RemoteHandle{}, fmt.Errorf("missing sessionId from real hermes")
+		return atypes.RemoteHandle{}, fmt.Errorf("missing sessionId from hermes")
 	}
-	run := &hermesRealRun{events: make(chan atypes.TaskEvent, 64), errs: make(chan error, 4)}
+	run := &hermesRun{events: make(chan atypes.TaskEvent, 64), errs: make(chan error, 4)}
 	a.mu.Lock()
 	a.runs[task.TaskID] = run
 	a.mu.Unlock()
@@ -86,7 +86,7 @@ func (a *HermesRealAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope
 		defer close(run.errs)
 		messageText := ""
 		var msgMu sync.Mutex
-		run.events <- atypes.TaskEvent{EventID: atypes.NewID(), TaskID: task.TaskID, Kind: atypes.TaskEventTaskRunning, State: atypes.TaskStatusRunning, Source: atypes.EventSourceAdapter, Message: "Real Hermes accepted the task", Data: map[string]any{"profile": profile, "session_id": sessionID}, CreatedAt: atypes.NowUTC()}
+		run.events <- atypes.TaskEvent{EventID: atypes.NewID(), TaskID: task.TaskID, Kind: atypes.TaskEventTaskRunning, State: atypes.TaskStatusRunning, Source: atypes.EventSourceAdapter, Message: "Hermes accepted the task", Data: map[string]any{"profile": profile, "session_id": sessionID}, CreatedAt: atypes.NowUTC()}
 		go func() {
 			_, err := worker.RequestWithTimeout("session/prompt", map[string]any{"sessionId": sessionID, "prompt": []map[string]any{{"type": "text", "text": promptText}}}, 60*time.Second)
 			if err != nil {
@@ -96,7 +96,7 @@ func (a *HermesRealAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope
 			msgMu.Lock()
 			finalText := messageText
 			msgMu.Unlock()
-			run.events <- atypes.TaskEvent{EventID: atypes.NewID(), TaskID: task.TaskID, Kind: atypes.TaskEventTaskCompleted, State: atypes.TaskStatusCompleted, Source: atypes.EventSourceAdapter, Message: "Real Hermes completed the task", Data: map[string]any{"result": map[string]any{"text": finalText}}, CreatedAt: atypes.NowUTC()}
+			run.events <- atypes.TaskEvent{EventID: atypes.NewID(), TaskID: task.TaskID, Kind: atypes.TaskEventTaskCompleted, State: atypes.TaskStatusCompleted, Source: atypes.EventSourceAdapter, Message: "Hermes completed the task", Data: map[string]any{"result": map[string]any{"text": finalText}}, CreatedAt: atypes.NowUTC()}
 		}()
 		idleDeadline := time.Now().Add(60 * time.Second)
 		for {
@@ -136,10 +136,10 @@ func (a *HermesRealAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope
 			}
 		}
 	}()
-	return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.TargetRuntime, Binding: "hermes_real_acp", RemoteExecutionID: sessionID, RemoteSessionID: sessionID, AdapterState: map[string]any{"profile": profile, "session_id": sessionID}}, nil
+	return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.TargetRuntime, Binding: "hermes_acp", RemoteExecutionID: sessionID, RemoteSessionID: sessionID, AdapterState: map[string]any{"profile": profile, "session_id": sessionID}}, nil
 }
 
-func (a *HermesRealAdapter) StreamEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
+func (a *HermesAdapter) StreamEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
 	a.mu.Lock()
 	run := a.runs[handle.TaskID]
 	a.mu.Unlock()
@@ -147,7 +147,7 @@ func (a *HermesRealAdapter) StreamEvents(ctx context.Context, handle atypes.Remo
 		events := make(chan atypes.TaskEvent)
 		errs := make(chan error, 1)
 		close(events)
-		errs <- fmt.Errorf("missing real hermes run")
+		errs <- fmt.Errorf("missing hermes run")
 		close(errs)
 		return events, errs
 	}
@@ -175,20 +175,20 @@ func (a *HermesRealAdapter) StreamEvents(ctx context.Context, handle atypes.Remo
 	return out, errOut
 }
 
-func (a *HermesRealAdapter) Resume(ctx context.Context, handle atypes.RemoteHandle, payload map[string]any) error {
-	return fmt.Errorf("real hermes adapter does not support resume in this thin validation slice")
+func (a *HermesAdapter) Resume(ctx context.Context, handle atypes.RemoteHandle, payload map[string]any) error {
+	return fmt.Errorf("hermes adapter does not support resume in this thin real-runtime slice")
 }
 
-func (a *HermesRealAdapter) Cancel(ctx context.Context, handle atypes.RemoteHandle) error {
+func (a *HermesAdapter) Cancel(ctx context.Context, handle atypes.RemoteHandle) error {
 	worker := a.runtime.GetStdioWorker(handle.RuntimeID, "profile:"+asString(handle.AdapterState, "profile"))
 	if worker == nil {
-		return fmt.Errorf("missing real hermes worker")
+		return fmt.Errorf("missing hermes worker")
 	}
 	_, err := worker.Request("session/cancel", map[string]any{"sessionId": handle.RemoteSessionID})
 	return err
 }
 
-func (a *HermesRealAdapter) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
+func (a *HermesAdapter) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
 	profile, _ := options["profile"].(string)
 	if profile == "" {
 		profile = "aethrolink-agent"

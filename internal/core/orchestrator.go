@@ -205,11 +205,11 @@ func (o *Orchestrator) buildRemoteHandle(task atypes.TaskRecord) atypes.RemoteHa
 	spec, err := o.registry.ResolveRuntime(context.Background(), task.ResolvedRuntime)
 	if err == nil {
 		switch spec.Adapter {
-		case "hermes":
+		case "hermes", "mock_hermes":
 			handle.AdapterState = map[string]any{"profile": asString(task.RuntimeOptions, "profile")}
-		case "openclaw":
+		case "mock_openclaw":
 			handle.AdapterState = map[string]any{"session_key": asString(task.RuntimeOptions, "session_key")}
-		case "acp_comm_http":
+		case "mock_acp_comm_http":
 			handle.AdapterState = map[string]any{"endpoint": spec.Endpoint}
 		}
 	}
@@ -428,9 +428,9 @@ func (o *Orchestrator) StopRuntime(ctx context.Context, runtimeID string, runtim
 	subcontext := ""
 	merged := mergeMaps(spec.Defaults, runtimeOptions)
 	switch spec.Adapter {
-	case "hermes":
+	case "hermes", "mock_hermes":
 		subcontext = "profile:" + asString(merged, "profile")
-	case "openclaw":
+	case "mock_openclaw":
 		subcontext = "session:" + asString(merged, "session_key")
 	}
 	if err := o.runtime.Stop(ctx, runtimeID, subcontext); err != nil {
