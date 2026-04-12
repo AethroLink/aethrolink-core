@@ -196,22 +196,17 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 }
 
 func (o *Orchestrator) buildRemoteHandle(task atypes.TaskRecord) atypes.RemoteHandle {
-	handle := atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
-	if task.Remote != nil {
-		handle.Binding = task.Remote.Binding
-		handle.RemoteExecutionID = task.Remote.RemoteExecutionID
-		handle.RemoteSessionID = task.Remote.RemoteSessionID
-	}
 	spec, err := o.registry.ResolveRuntime(context.Background(), task.ResolvedRuntime)
-	if err == nil {
-		switch spec.Adapter {
-		case "hermes", "mock_hermes":
-			handle.AdapterState = map[string]any{"profile": asString(task.RuntimeOptions, "profile")}
-		case "mock_openclaw":
-			handle.AdapterState = map[string]any{"session_key": asString(task.RuntimeOptions, "session_key")}
-		case "mock_acp_comm_http":
-			handle.AdapterState = map[string]any{"endpoint": spec.Endpoint}
-		}
+	if err != nil {
+		return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+	}
+	adapter, ok := o.adapters.Get(spec.Adapter)
+	if !ok {
+		return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+	}
+	handle, err := adapter.RehydrateHandle(task, spec)
+	if err != nil {
+		return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
 	}
 	return handle
 }
@@ -425,14 +420,12 @@ func (o *Orchestrator) StopRuntime(ctx context.Context, runtimeID string, runtim
 	if err != nil {
 		return nil, ErrRuntimeNotFound
 	}
-	subcontext := ""
-	merged := mergeMaps(spec.Defaults, runtimeOptions)
-	switch spec.Adapter {
-	case "hermes", "mock_hermes":
-		subcontext = "profile:" + asString(merged, "profile")
-	case "mock_openclaw":
-		subcontext = "session:" + asString(merged, "session_key")
+	adapter, ok := o.adapters.Get(spec.Adapter)
+	if !ok {
+		return nil, fmt.Errorf("adapter missing")
 	}
+	merged := mergeMaps(spec.Defaults, runtimeOptions)
+	subcontext := adapter.SubcontextKey(spec, merged)
 	if err := o.runtime.Stop(ctx, runtimeID, subcontext); err != nil {
 		return nil, err
 	}

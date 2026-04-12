@@ -107,11 +107,30 @@ func (a *MockHermesAdapter) Cancel(ctx context.Context, handle atypes.RemoteHand
 	return drivers.NewACPClientDriver(worker).SessionCancel(handle.RemoteSessionID)
 }
 func (a *MockHermesAdapter) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
-	profile, _ := options["profile"].(string)
+	return a.runtime.Health(runtimeID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
+}
+
+func (a *MockHermesAdapter) RehydrateHandle(task atypes.TaskRecord, spec atypes.RuntimeSpec) (atypes.RemoteHandle, error) {
+	handle := atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+	if task.Remote != nil {
+		handle.Binding = task.Remote.Binding
+		handle.RemoteExecutionID = task.Remote.RemoteExecutionID
+		handle.RemoteSessionID = task.Remote.RemoteSessionID
+	}
+	profile := asString(task.RuntimeOptions, "profile")
 	if profile == "" {
 		profile = "coder"
 	}
-	return a.runtime.Health(runtimeID, "profile:"+profile), nil
+	handle.AdapterState = map[string]any{"profile": profile, "session_id": handle.RemoteSessionID}
+	return handle, nil
+}
+
+func (a *MockHermesAdapter) SubcontextKey(spec atypes.RuntimeSpec, runtimeOptions map[string]any) string {
+	profile := asString(runtimeOptions, "profile")
+	if profile == "" {
+		profile = "coder"
+	}
+	return "profile:" + profile
 }
 
 type MockOpenClawAdapter struct {
@@ -223,11 +242,30 @@ func (a *MockOpenClawAdapter) Cancel(ctx context.Context, handle atypes.RemoteHa
 	return drivers.NewACPClientDriver(worker).SessionCancel(handle.RemoteSessionID)
 }
 func (a *MockOpenClawAdapter) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
-	sessionKey, _ := options["session_key"].(string)
+	return a.runtime.Health(runtimeID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
+}
+
+func (a *MockOpenClawAdapter) RehydrateHandle(task atypes.TaskRecord, spec atypes.RuntimeSpec) (atypes.RemoteHandle, error) {
+	handle := atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+	if task.Remote != nil {
+		handle.Binding = task.Remote.Binding
+		handle.RemoteExecutionID = task.Remote.RemoteExecutionID
+		handle.RemoteSessionID = task.Remote.RemoteSessionID
+	}
+	sessionKey := asString(task.RuntimeOptions, "session_key")
 	if sessionKey == "" {
 		sessionKey = "main"
 	}
-	return a.runtime.Health(runtimeID, "session:"+sessionKey), nil
+	handle.AdapterState = map[string]any{"session_key": sessionKey, "session_id": handle.RemoteSessionID}
+	return handle, nil
+}
+
+func (a *MockOpenClawAdapter) SubcontextKey(spec atypes.RuntimeSpec, runtimeOptions map[string]any) string {
+	sessionKey := asString(runtimeOptions, "session_key")
+	if sessionKey == "" {
+		sessionKey = "main"
+	}
+	return "session:" + sessionKey
 }
 
 type MockACPHTTPAdapter struct {
@@ -301,5 +339,20 @@ func (a *MockACPHTTPAdapter) Cancel(ctx context.Context, handle atypes.RemoteHan
 	return a.driver.CancelRun(asString(handle.AdapterState, "endpoint"), handle.RemoteExecutionID)
 }
 func (a *MockACPHTTPAdapter) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
-	return a.runtime.Health(runtimeID, ""), nil
+	return a.runtime.Health(runtimeID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
+}
+
+func (a *MockACPHTTPAdapter) RehydrateHandle(task atypes.TaskRecord, spec atypes.RuntimeSpec) (atypes.RemoteHandle, error) {
+	handle := atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+	if task.Remote != nil {
+		handle.Binding = task.Remote.Binding
+		handle.RemoteExecutionID = task.Remote.RemoteExecutionID
+		handle.RemoteSessionID = task.Remote.RemoteSessionID
+	}
+	handle.AdapterState = map[string]any{"endpoint": spec.Endpoint}
+	return handle, nil
+}
+
+func (a *MockACPHTTPAdapter) SubcontextKey(spec atypes.RuntimeSpec, runtimeOptions map[string]any) string {
+	return ""
 }

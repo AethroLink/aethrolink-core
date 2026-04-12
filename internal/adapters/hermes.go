@@ -189,11 +189,30 @@ func (a *HermesAdapter) Cancel(ctx context.Context, handle atypes.RemoteHandle) 
 }
 
 func (a *HermesAdapter) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
-	profile, _ := options["profile"].(string)
+	return a.runtime.Health(runtimeID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
+}
+
+func (a *HermesAdapter) RehydrateHandle(task atypes.TaskRecord, spec atypes.RuntimeSpec) (atypes.RemoteHandle, error) {
+	handle := atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+	if task.Remote != nil {
+		handle.Binding = task.Remote.Binding
+		handle.RemoteExecutionID = task.Remote.RemoteExecutionID
+		handle.RemoteSessionID = task.Remote.RemoteSessionID
+	}
+	profile := asString(task.RuntimeOptions, "profile")
 	if profile == "" {
 		profile = "aethrolink-agent"
 	}
-	return a.runtime.Health(runtimeID, "profile:"+profile), nil
+	handle.AdapterState = map[string]any{"profile": profile, "session_id": handle.RemoteSessionID}
+	return handle, nil
+}
+
+func (a *HermesAdapter) SubcontextKey(spec atypes.RuntimeSpec, runtimeOptions map[string]any) string {
+	profile := asString(runtimeOptions, "profile")
+	if profile == "" {
+		profile = "aethrolink-agent"
+	}
+	return "profile:" + profile
 }
 
 func payloadText(task atypes.TaskEnvelope) string {
