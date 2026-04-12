@@ -56,6 +56,8 @@ type StdioWorker struct {
 	nextReqID   atomic.Uint64
 }
 
+// spawnStdioWorker starts a long-lived JSON-RPC-over-stdio worker and attaches
+// the read loop that demultiplexes responses vs unsolicited events.
 func spawnStdioWorker(command []string) (*StdioWorker, error) {
 	if len(command) == 0 {
 		return nil, fmt.Errorf("empty stdio command")
@@ -94,6 +96,8 @@ func (w *StdioWorker) readLoop(stdout io.Reader) {
 		if err := json.Unmarshal(line, &msg); err != nil {
 			continue
 		}
+		// Messages with an id are direct RPC responses; everything else is treated
+		// as a broadcast event for active subscribers.
 		if idValue, ok := msg["id"]; ok {
 			if idf, ok := idValue.(float64); ok {
 				id := uint64(idf)
@@ -192,6 +196,9 @@ type Manager struct {
 	entries map[string]runtimeEntry
 }
 
+// NewManager owns the live in-process runtime registry. It is intentionally
+// small: enough to reuse/stop workers and record leases, without taking on
+// broader orchestration policy.
 func NewManager(store *storage.SQLiteStore) *Manager {
 	return &Manager{store: store, entries: map[string]runtimeEntry{}}
 }
@@ -213,6 +220,8 @@ func (m *Manager) EnsureProcess(ctx context.Context, runtimeID, subcontextKey st
 	}
 	m.mu.Unlock()
 
+	// Even command-less runtimes still get a lease entry so the rest of the stack
+	// can treat "ready" consistently across local and externally-managed runtimes.
 	lease := atypes.RuntimeLease{LeaseID: atypes.NewID(), RuntimeID: runtimeID, SubcontextKey: subcontextKey, Metadata: map[string]any{}, CreatedAt: atypes.NowUTC()}
 	if len(command) == 0 {
 		if err := m.store.InsertLease(ctx, lease); err != nil {
@@ -223,6 +232,8 @@ func (m *Manager) EnsureProcess(ctx context.Context, runtimeID, subcontextKey st
 		m.mu.Unlock()
 		return lease, nil
 	}
+	// stdio runtimes are keyed by runtime+subcontext so profiles/sessions can be
+	// reused independently without bleeding state into each other.
 	launchID, err := m.store.InsertLaunchHistory(ctx, runtimeID, subcontextKey, command, "", "launching", "")
 	if err != nil {
 		return atypes.RuntimeLease{}, err

@@ -17,6 +17,9 @@ type RegistryDiscovery struct {
 	routes   map[string]atypes.RouteSpec
 }
 
+// LoadRegistry reads the runtime catalog and intent routes into an in-memory
+// lookup structure. Specs are normalized up front so the rest of the system can
+// assume maps/defaults are present.
 func LoadRegistry(path string) (*RegistryDiscovery, error) {
 	content, err := os.ReadFile(path)
 	if err != nil {
@@ -82,6 +85,9 @@ func (d *RegistryDiscovery) RouteForIntent(intent string) (atypes.RouteSpec, boo
 }
 
 func cloneRuntimeSpec(spec atypes.RuntimeSpec) atypes.RuntimeSpec {
+	// Return defensive copies because callers frequently merge defaults/options at
+	// runtime; mutating the shared registry copy would create hidden cross-request
+	// coupling.
 	spec.Defaults = cloneMap(spec.Defaults)
 	if spec.Capabilities != nil {
 		spec.Capabilities = append([]string(nil), spec.Capabilities...)

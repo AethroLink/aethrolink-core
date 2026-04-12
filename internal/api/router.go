@@ -16,6 +16,9 @@ type Server struct {
 	orchestrator *core.Orchestrator
 }
 
+// NewServer wires the thin HTTP control plane onto the orchestrator. The HTTP
+// layer should stay translation-only: validate/decode requests, delegate to the
+// core, then shape the response.
 func NewServer(orchestrator *core.Orchestrator) http.Handler {
 	s := &Server{orchestrator: orchestrator}
 	mux := http.NewServeMux()
@@ -95,6 +98,8 @@ func (s *Server) handleTaskEvents(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, errors.New("streaming unsupported"))
 		return
 	}
+	// Replay persisted history first so late subscribers still see the full task
+	// timeline before switching to live updates.
 	for _, event := range history {
 		writeSSE(w, event)
 		flusher.Flush()
@@ -229,6 +234,8 @@ func decodeJSON(r *http.Request, out any) error {
 	}
 	defer r.Body.Close()
 	decoder := json.NewDecoder(r.Body)
+	// Reject unknown fields at the API edge so request mistakes fail fast instead
+	// of being silently ignored deeper in the orchestration path.
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(out); err != nil {
 		return err

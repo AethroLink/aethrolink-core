@@ -50,7 +50,13 @@ func (a *HermesAdapter) EnsureReady(ctx context.Context, runtimeID string, optio
 	return returnLease, err
 }
 
+// Submit stays generic because it satisfies the runtime-neutral adapter
+// interface; the Hermes-specific execution flow lives in submitHermesPrompt.
 func (a *HermesAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
+	return a.submitHermesPrompt(ctx, task, lease)
+}
+
+func (a *HermesAdapter) submitHermesPrompt(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
 	profile := lease.SubcontextKey[len("profile:"):]
 	worker := a.runtime.GetStdioWorker(task.TargetRuntime, lease.SubcontextKey)
 	if worker == nil {
@@ -75,7 +81,7 @@ func (a *HermesAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, le
 	a.mu.Lock()
 	a.runs[task.TaskID] = run
 	a.mu.Unlock()
-	promptText := payloadText(task)
+	promptText := extractPromptTextFromPayload(task)
 	if promptText == "" {
 		promptText = "Say exactly OK"
 	}
@@ -90,6 +96,8 @@ func (a *HermesAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, le
 		go func() {
 			_, err := worker.RequestWithTimeout("session/prompt", map[string]any{"sessionId": sessionID, "prompt": []map[string]any{{"type": "text", "text": promptText}}}, 60*time.Second)
 			if err != nil {
+				// Keep prompt-request failures on the adapter error channel so the
+				// orchestrator records them as stream/task failures.
 				run.errs <- err
 				return
 			}
@@ -140,6 +148,10 @@ func (a *HermesAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, le
 }
 
 func (a *HermesAdapter) StreamEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
+	return a.streamHermesRunEvents(ctx, handle)
+}
+
+func (a *HermesAdapter) streamHermesRunEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
 	a.mu.Lock()
 	run := a.runs[handle.TaskID]
 	a.mu.Unlock()
@@ -192,6 +204,8 @@ func (a *HermesAdapter) Health(ctx context.Context, runtimeID string, options ma
 	return a.runtime.Health(runtimeID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
 }
 
+// RehydrateHandle rebuilds adapter-private state after the orchestrator loads a
+// persisted task record for resume/cancel flows.
 func (a *HermesAdapter) RehydrateHandle(task atypes.TaskRecord, spec atypes.RuntimeSpec) (atypes.RemoteHandle, error) {
 	handle := atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
 	if task.Remote != nil {
@@ -215,7 +229,7 @@ func (a *HermesAdapter) SubcontextKey(spec atypes.RuntimeSpec, runtimeOptions ma
 	return "profile:" + profile
 }
 
-func payloadText(task atypes.TaskEnvelope) string {
+func extractPromptTextFromPayload(task atypes.TaskEnvelope) string {
 	if text, ok := task.Payload["text"].(string); ok && text != "" {
 		return text
 	}

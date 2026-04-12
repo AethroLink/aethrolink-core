@@ -6,7 +6,9 @@ import (
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
 
-func eventFromACP(taskID string, raw map[string]any) atypes.TaskEvent {
+// mapACPEventToTaskEvent normalizes adapter-local ACP events into the
+// task event shape that the orchestrator persists.
+func mapACPEventToTaskEvent(taskID string, raw map[string]any) atypes.TaskEvent {
 	kind, _ := raw["kind"].(string)
 	message, _ := raw["message"].(string)
 	data, _ := raw["data"].(map[string]any)
@@ -32,7 +34,9 @@ func eventFromACP(taskID string, raw map[string]any) atypes.TaskEvent {
 	return atypes.TaskEvent{EventID: atypes.NewID(), TaskID: taskID, Kind: eventKind, State: status, Source: atypes.EventSourceAdapter, Message: message, Data: data, CreatedAt: atypes.NowUTC()}
 }
 
-func eventFromHTTP(taskID string, raw map[string]any) atypes.TaskEvent {
+// mapHTTPRunToTaskEvent converts polled HTTP runtime state into the same
+// task event contract used by local/stdio adapters.
+func mapHTTPRunToTaskEvent(taskID string, raw map[string]any) atypes.TaskEvent {
 	status, _ := raw["status"].(string)
 	data := map[string]any{}
 	if result, ok := raw["result"].(map[string]any); ok {
@@ -65,7 +69,7 @@ func eventFromHTTP(taskID string, raw map[string]any) atypes.TaskEvent {
 	return atypes.TaskEvent{EventID: atypes.NewID(), TaskID: taskID, Kind: kind, State: state, Source: atypes.EventSourceAdapter, Message: message, Data: data, CreatedAt: atypes.NowUTC()}
 }
 
-func jsonMarshal(v map[string]any) (string, error) {
+func marshalPayloadJSON(v map[string]any) (string, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return "", err

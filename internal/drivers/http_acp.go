@@ -13,6 +13,9 @@ type HTTPACPDriver struct {
 	client *http.Client
 }
 
+// NewHTTPACPDriver is the polling bridge for ACP-style HTTP runtimes. It
+// keeps transport mechanics out of adapters so adapter code can focus on task
+// mapping.
 func NewHTTPACPDriver() *HTTPACPDriver {
 	return &HTTPACPDriver{client: &http.Client{Timeout: 5 * time.Second}}
 }
@@ -41,6 +44,8 @@ func (d *HTTPACPDriver) PollRun(endpoint, runID string) (<-chan map[string]any, 
 	go func() {
 		defer close(out)
 		defer close(errCh)
+		// Only emit on status transitions; callers want lifecycle changes, not a
+		// tight loop of identical snapshots.
 		lastStatus := ""
 		for {
 			run, err := d.GetRun(endpoint, runID)
