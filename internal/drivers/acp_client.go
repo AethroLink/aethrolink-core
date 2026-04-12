@@ -10,6 +10,8 @@ type ACPClientDriver struct {
 	worker *runtime.StdioWorker
 }
 
+// NewACPClientDriver wraps the raw stdio JSON-RPC worker with ACP-shaped
+// verbs so adapters do not have to construct method names and payloads by hand.
 func NewACPClientDriver(worker *runtime.StdioWorker) *ACPClientDriver {
 	return &ACPClientDriver{worker: worker}
 }
@@ -67,6 +69,8 @@ func (d *ACPClientDriver) EventStream(sessionID string) (<-chan map[string]any, 
 	go func() {
 		defer close(out)
 		for msg := range sub {
+			// The worker subscription is shared, so filter aggressively down to the
+			// single session the adapter asked to observe.
 			params, _ := msg["params"].(map[string]any)
 			if params == nil {
 				continue

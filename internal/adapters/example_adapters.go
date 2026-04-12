@@ -37,7 +37,14 @@ func (a *MockHermesAdapter) EnsureReady(ctx context.Context, runtimeID string, o
 	returnLease, _, err := a.runtime.EnsureStdioWorker(ctx, runtimeID, "profile:"+profile, command)
 	return returnLease, err
 }
+
+// Submit stays generic because it satisfies the shared runtime adapter
+// interface; the mock-Hermes-specific flow lives in submitMockHermesPrompt.
 func (a *MockHermesAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
+	return a.submitMockHermesPrompt(ctx, task, lease)
+}
+
+func (a *MockHermesAdapter) submitMockHermesPrompt(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
 	profile := lease.SubcontextKey[len("profile:"):]
 	worker := a.runtime.GetStdioWorker(task.TargetRuntime, lease.SubcontextKey)
 	if worker == nil {
@@ -59,6 +66,10 @@ func (a *MockHermesAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope
 	return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.TargetRuntime, Binding: "acp_client_stdio", RemoteExecutionID: remoteExec, RemoteSessionID: sessionID, AdapterState: map[string]any{"profile": profile, "session_id": sessionID}}, nil
 }
 func (a *MockHermesAdapter) StreamEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
+	return a.streamMockHermesEvents(ctx, handle)
+}
+
+func (a *MockHermesAdapter) streamMockHermesEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
 	worker := a.runtime.GetStdioWorker(handle.RuntimeID, "profile:"+asString(handle.AdapterState, "profile"))
 	out := make(chan atypes.TaskEvent, 64)
 	errCh := make(chan error, 1)
@@ -82,7 +93,7 @@ func (a *MockHermesAdapter) StreamEvents(ctx context.Context, handle atypes.Remo
 				if !ok {
 					return
 				}
-				event := eventFromACP(handle.TaskID, raw)
+				event := mapACPEventToTaskEvent(handle.TaskID, raw)
 				out <- event
 				if event.State.IsTerminal() {
 					return
@@ -161,6 +172,10 @@ func (a *MockOpenClawAdapter) EnsureReady(ctx context.Context, runtimeID string,
 	return returnLease, err
 }
 func (a *MockOpenClawAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
+	return a.submitMockOpenClawPrompt(ctx, task, lease)
+}
+
+func (a *MockOpenClawAdapter) submitMockOpenClawPrompt(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
 	sessionKey := lease.SubcontextKey[len("session:"):]
 	worker := a.runtime.GetStdioWorker(task.TargetRuntime, lease.SubcontextKey)
 	if worker == nil {
@@ -194,6 +209,10 @@ func (a *MockOpenClawAdapter) Submit(ctx context.Context, task atypes.TaskEnvelo
 	return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.TargetRuntime, Binding: "acp_client_stdio", RemoteExecutionID: remoteExec, RemoteSessionID: sessionID, AdapterState: map[string]any{"session_key": sessionKey, "session_id": sessionID}}, nil
 }
 func (a *MockOpenClawAdapter) StreamEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
+	return a.streamMockOpenClawEvents(ctx, handle)
+}
+
+func (a *MockOpenClawAdapter) streamMockOpenClawEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
 	worker := a.runtime.GetStdioWorker(handle.RuntimeID, "session:"+asString(handle.AdapterState, "session_key"))
 	out := make(chan atypes.TaskEvent, 64)
 	errCh := make(chan error, 1)
@@ -217,7 +236,7 @@ func (a *MockOpenClawAdapter) StreamEvents(ctx context.Context, handle atypes.Re
 				if !ok {
 					return
 				}
-				event := eventFromACP(handle.TaskID, raw)
+				event := mapACPEventToTaskEvent(handle.TaskID, raw)
 				out <- event
 				if event.State.IsTerminal() {
 					return
@@ -290,12 +309,16 @@ func (a *MockACPHTTPAdapter) EnsureReady(ctx context.Context, runtimeID string, 
 	return a.runtime.EnsureProcess(ctx, runtimeID, "", spec.Launch.Command, spec.Healthcheck)
 }
 func (a *MockACPHTTPAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
+	return a.submitMockHTTPRun(ctx, task, lease)
+}
+
+func (a *MockACPHTTPAdapter) submitMockHTTPRun(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
 	spec, err := a.registry.ResolveRuntime(ctx, task.TargetRuntime)
 	if err != nil {
 		return atypes.RemoteHandle{}, err
 	}
 	headers, _ := task.RuntimeOptions["headers"].(map[string]any)
-	payloadJSON, _ := jsonMarshal(task.Payload)
+	payloadJSON, _ := marshalPayloadJSON(task.Payload)
 	body := map[string]any{"messages": []map[string]any{{"role": "system", "content": "aethrolink_control"}, {"role": "user", "content": payloadJSON}}}
 	result, err := a.driver.CreateRun(spec.Endpoint, body, headers)
 	if err != nil {
@@ -306,6 +329,10 @@ func (a *MockACPHTTPAdapter) Submit(ctx context.Context, task atypes.TaskEnvelop
 	return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.TargetRuntime, Binding: "acp_comm_http", RemoteExecutionID: runID, RemoteSessionID: sessionID, AdapterState: map[string]any{"endpoint": spec.Endpoint}}, nil
 }
 func (a *MockACPHTTPAdapter) StreamEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
+	return a.streamMockHTTPEvents(ctx, handle)
+}
+
+func (a *MockACPHTTPAdapter) streamMockHTTPEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
 	endpoint := asString(handle.AdapterState, "endpoint")
 	rawCh, errCh := a.driver.PollRun(endpoint, handle.RemoteExecutionID)
 	out := make(chan atypes.TaskEvent, 16)
@@ -326,7 +353,7 @@ func (a *MockACPHTTPAdapter) StreamEvents(ctx context.Context, handle atypes.Rem
 				if !ok {
 					return
 				}
-				out <- eventFromHTTP(handle.TaskID, raw)
+				out <- mapHTTPRunToTaskEvent(handle.TaskID, raw)
 			}
 		}
 	}()

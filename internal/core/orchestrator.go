@@ -195,7 +195,9 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 	return o.GetTask(ctx, task.TaskID)
 }
 
-func (o *Orchestrator) buildRemoteHandle(task atypes.TaskRecord) atypes.RemoteHandle {
+// rehydrateRemoteHandle asks the adapter to rebuild any adapter-private
+// handle state from the persisted task record.
+func (o *Orchestrator) rehydrateRemoteHandle(task atypes.TaskRecord) atypes.RemoteHandle {
 	spec, err := o.registry.ResolveRuntime(context.Background(), task.ResolvedRuntime)
 	if err != nil {
 		return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
@@ -211,6 +213,8 @@ func (o *Orchestrator) buildRemoteHandle(task atypes.TaskRecord) atypes.RemoteHa
 	return handle
 }
 
+// runTask is the generic execution loop. It owns task lifecycle transitions,
+// but delegates runtime-specific details to the selected adapter.
 func (o *Orchestrator) runTask(taskID string, delivery atypes.DeliveryPolicy, payload map[string]any) {
 	ctx := context.Background()
 	task, err := o.store.GetTask(ctx, taskID)
@@ -347,7 +351,7 @@ func (o *Orchestrator) ResumeTask(ctx context.Context, taskID string, payload ma
 	if !ok {
 		return atypes.TaskRecord{}, fmt.Errorf("adapter missing")
 	}
-	handle := o.buildRemoteHandle(task)
+	handle := o.rehydrateRemoteHandle(task)
 	if err := adapter.Resume(ctx, handle, payload); err != nil {
 		return atypes.TaskRecord{}, err
 	}
@@ -371,7 +375,7 @@ func (o *Orchestrator) CancelTask(ctx context.Context, taskID, reason string) (a
 	if !ok {
 		return atypes.TaskRecord{}, fmt.Errorf("adapter missing")
 	}
-	handle := o.buildRemoteHandle(task)
+	handle := o.rehydrateRemoteHandle(task)
 	payload := map[string]any{}
 	if reason != "" {
 		payload["reason"] = reason

@@ -39,6 +39,8 @@ func main() {
 		}
 	}()
 
+	// Composition root: runtime manager owns live workers, adapters translate
+	// runtime-specific behavior, and the orchestrator owns task lifecycle.
 	runtimeManager := runtime.NewManager(store)
 	adapterRegistry := adapters.NewRegistry()
 	adapterRegistry.Register("hermes", adapters.NewHermesAdapter(registry, runtimeManager))

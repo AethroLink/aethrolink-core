@@ -23,6 +23,9 @@ type SQLiteStore struct {
 	artifactBaseURL string
 }
 
+// Open initializes the durable local state for runtimes, tasks, events,
+// leases, and artifacts. This store is the source of truth for
+// restart-visible history.
 func Open(databaseURL, artifactDir, artifactBaseURL string) (*SQLiteStore, error) {
 	driverURL := normalizeSQLiteURL(databaseURL)
 	db, err := sql.Open("sqlite", driverURL)
@@ -67,6 +70,8 @@ func (s *SQLiteStore) Close() error {
 }
 
 func (s *SQLiteStore) migrate(ctx context.Context) error {
+	// Keep schema setup explicit and append-only for now. The v0.1 surface is
+	// small enough that a single bootstrap migration is easier to audit.
 	stmts := []string{
 		`PRAGMA journal_mode=WAL;`,
 		`CREATE TABLE IF NOT EXISTS runtimes (runtime_id TEXT PRIMARY KEY, adapter_kind TEXT NOT NULL, spec_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
@@ -118,6 +123,8 @@ func (s *SQLiteStore) StoreJSONArtifact(ctx context.Context, value map[string]an
 }
 
 func (s *SQLiteStore) StoreArtifactBytes(ctx context.Context, mediaType string, body []byte) (atypes.ArtifactRef, error) {
+	// Artifacts are stored as files on disk; the database keeps lookup metadata
+	// and integrity fields so tasks/events can reference them durably.
 	artifactID := atypes.NewID()
 	relativePath := artifactID + ".bin"
 	fullPath := filepath.Join(s.artifactDir, relativePath)
@@ -205,6 +212,8 @@ func (s *SQLiteStore) UpdateTaskState(ctx context.Context, taskID string, status
 		}
 		lastErrorJSON = string(encoded)
 	}
+	// COALESCE preserves remote binding/session identifiers when a later state
+	// transition only updates status or error information.
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE tasks
 		SET status = ?,
@@ -223,6 +232,8 @@ func (s *SQLiteStore) UpdateTaskState(ctx context.Context, taskID string, status
 }
 
 func (s *SQLiteStore) NextSeq(ctx context.Context, taskID string) (int64, error) {
+	// Event ordering is task-local and monotonic. Persisted sequence numbers make
+	// SSE replay and debugging reflect the exact lifecycle observed by the core.
 	var seq int64
 	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MAX(seq), 0) FROM task_events WHERE task_id = ?`, taskID).Scan(&seq); err != nil {
 		return 0, fmt.Errorf("next seq: %w", err)

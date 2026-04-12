@@ -284,6 +284,9 @@ type RegistryFile struct {
 	Routes   map[string]RouteSpec   `json:"routes,omitempty" yaml:"routes,omitempty"`
 }
 
+// RuntimeAdapter intentionally uses shared verbs like Submit/Resume/Cancel so
+// the orchestrator can stay generic; adapter-specific helper names live behind
+// this interface.
 type RuntimeAdapter interface {
 	AdapterName() string
 	Capabilities(ctx context.Context) (map[string]any, error)
