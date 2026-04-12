@@ -17,6 +17,19 @@ The long-term goal is more ambitious:
 - add stronger identity and trust layers
 - support multiple protocol bindings without rewriting the core
 
+## Current implementation direction
+
+AethroLink is now a Go-first codebase.
+
+That means:
+
+- new implementation work should target Go
+- architecture docs should describe Go packages and binaries
+- prior Rust-era implementation ideas should be treated as migration history, not the forward plan
+- the core remains runtime-agnostic even though Hermes is the first practical adapter target
+
+The point of this change is not language aesthetics. The point is a lighter operational model, faster iteration, and simpler deployment while the product is still proving its first durable execution path.
+
 ## Why AethroLink exists
 
 Today, agent systems are fragmented across different runtime models and protocol surfaces.
@@ -33,19 +46,19 @@ AethroLink exists to provide a stable orchestration core above those runtime dif
 
 AethroLink is built around four architectural ideas:
 
-1. **Runtime-first, not protocol-first**
+1. Runtime-first, not protocol-first
    - The core routes to runtimes.
    - Protocols are implementation details inside adapters.
 
-2. **Task lifecycle belongs to AethroLink**
+2. Task lifecycle belongs to AethroLink
    - Local `task_id` is always primary.
    - Remote protocol identifiers are secondary bindings.
 
-3. **Transport is separate from execution**
+3. Transport is separate from execution
    - Runtime execution and network delivery are separate concerns.
    - This allows the local MVP to remain clean while future decentralized transports are added later.
 
-4. **Decentralized evolution is a present constraint**
+4. Decentralized evolution is a present constraint
    - Discovery, transport, identity, and storage must be isolated from day one.
    - The local MVP should not lock the system into a centralized-only design.
 
@@ -77,7 +90,7 @@ AethroLink is built around four architectural ideas:
 
 ## Public model
 
-AethroLink exposes **runtimes** as execution targets.
+AethroLink exposes runtimes as execution targets.
 
 Examples:
 
@@ -85,7 +98,7 @@ Examples:
 - `openclaw`
 - `researcher_http`
 
-AethroLink does **not** expose:
+AethroLink does not expose:
 
 - Hermes profiles as separate public runtime IDs
 - OpenClaw session keys as separate public runtime IDs
@@ -97,11 +110,11 @@ Profiles and session keys belong in `runtime_options`.
 
 The core system should look like this:
 
-- **AethroLink Core** owns task lifecycle
-- **RuntimeAdapters** translate tasks into runtime-specific operations
-- **TransportAdapters** handle node-to-node delivery
-- **DiscoveryProviders** resolve runtimes
-- **IdentityProviders** sign and verify node-level envelopes
+- AethroLink Core owns task lifecycle
+- Runtime adapters translate tasks into runtime-specific operations
+- Transport adapters handle node-to-node delivery
+- Discovery providers resolve runtimes
+- Identity providers sign and verify node-level envelopes
 
 Only the first slice is fully implemented in `v0.1`, but all boundaries should exist now.
 
@@ -141,59 +154,68 @@ This is important because AethroLink must track work even before a target runtim
 
 ## Repository shape
 
-Recommended Rust workspace:
+Recommended Go-first layout:
 
 ```text
 aethrolink-core/
-  Cargo.toml
-  crates/
-    alink-types/
-    alink-core/
-    alink-storage/
-    alink-runtime/
-    alink-drivers/
-    alink-adapters/
-    alink-transport/
-    alink-api/
+  go.mod
+  cmd/
     alink-node/
     alink-cli/
+    fake-acp-client-agent/
+    fake-acp-comm-agent/
+  internal/
+    api/
+    core/
+    adapters/
+    drivers/
+    runtime/
+    storage/
+    transport/
+    config/
+  pkg/
+    types/
+    contracts/
   docs/
     overview.md
+    contracts.md
+    state_machine.md
+    adapter_contracts.md
+    implementation_plan.md
   examples/
     registry.yaml
-    fake_acp_comm_agent/
-    fake_acp_client_agent/
   tests/
     integration/
 ```
 
 ## Recommended stack
 
-- Rust
-- tokio
-- axum
-- serde / serde_json / serde_yaml
-- sqlx with SQLite
-- reqwest
-- async-trait
-- tracing
-- clap
+- Go
+- chi or stdlib `net/http`
+- `context` for lifecycle management
+- `database/sql` with SQLite driver
+- JSON/YAML config parsing
+- SSE over HTTP
+- structured logging with `slog`
+- Cobra only if CLI complexity justifies it
 
 ## Implementation priority
 
-1. Build the core types and traits
+1. Build the core types and interfaces
 2. Implement SQLite-backed task/event persistence
 3. Implement static registry discovery
 4. Implement local loopback transport
 5. Implement Hermes adapter
 6. Implement OpenClaw adapter
 7. Implement ACP communication HTTP adapter
-8. Expose HTTP API + SSE
+8. Expose HTTP API and SSE
 9. Add integration tests with fake runtimes
 
 ## Documentation
 
-- See [`docs/overview.md`](docs/overview.md) for the full implementation architecture used by the coding agent.
+- See `docs/overview.md` for the full implementation architecture.
+- See `docs/implementation_plan.md` for the build order.
+- See `docs/contracts.md` and `docs/adapter_contracts.md` for normative contracts.
 
 ## Status
 

@@ -1,0 +1,56 @@
+runtimes:
+  hermes:
+    adapter: hermes
+    launch:
+      mode: managed
+      commands:
+        coder: ["go", "run", "./cmd/fake-acp-client-agent"]
+        research: ["go", "run", "./cmd/fake-acp-client-agent"]
+        ops: ["go", "run", "./cmd/fake-acp-client-agent"]
+    defaults:
+      profile: coder
+      session_strategy: sticky-process
+    capabilities:
+      - code.patch
+      - code.review
+      - research.topic
+
+  openclaw:
+    adapter: openclaw
+    launch:
+      mode: on_demand
+      command: ["go", "run", "./cmd/fake-acp-client-agent"]
+    defaults:
+      session_key: main
+      session_strategy: sticky-session-key
+    capabilities:
+      - ui.review
+      - thread.reply
+      - gateway.chat
+
+  researcher_http:
+    adapter: acp_comm_http
+    endpoint: http://127.0.0.1:9102
+    healthcheck: http://127.0.0.1:9102/ping
+    launch:
+      mode: managed
+      command: ["go", "run", "./cmd/fake-acp-comm-agent", "--port", "9102"]
+    capabilities:
+      - summarize
+      - research.topic
+
+routes:
+  code.patch:
+    runtime: hermes
+    runtime_options:
+      profile: coder
+  research.topic:
+    runtime: hermes
+    runtime_options:
+      profile: research
+  ui.review:
+    runtime: openclaw
+    runtime_options:
+      session_key: design
+  summarize:
+    runtime: researcher_http
