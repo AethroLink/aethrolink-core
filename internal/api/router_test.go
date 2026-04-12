@@ -24,8 +24,8 @@ func setupServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
 	root := filepath.Clean(filepath.Join("..", ".."))
 	registryPath := filepath.Join(t.TempDir(), "registry.yaml")
 	content := fmt.Sprintf(`runtimes:
-  hermes:
-    adapter: hermes
+  mock_hermes:
+    adapter: mock_hermes
     launch:
       mode: managed
       commands:
@@ -37,8 +37,8 @@ func setupServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
     capabilities:
       - code.patch
       - research.topic
-  openclaw:
-    adapter: openclaw
+  mock_openclaw:
+    adapter: mock_openclaw
     launch:
       mode: on_demand
       command: ["go", "run", "%s/cmd/fake-acp-client-agent"]
@@ -46,8 +46,8 @@ func setupServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
       session_key: main
     capabilities:
       - ui.review
-  researcher_http:
-    adapter: acp_comm_http
+  mock_researcher_http:
+    adapter: mock_acp_comm_http
     endpoint: http://127.0.0.1:19102
     healthcheck: http://127.0.0.1:19102/ping
     launch:
@@ -57,15 +57,15 @@ func setupServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
       - summarize
 routes:
   code.patch:
-    runtime: hermes
+    runtime: mock_hermes
     runtime_options:
       profile: coder
   ui.review:
-    runtime: openclaw
+    runtime: mock_openclaw
     runtime_options:
       session_key: design
   summarize:
-    runtime: researcher_http
+    runtime: mock_researcher_http
 `, root, root, root, root, root)
 	if err := os.WriteFile(registryPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write registry: %v", err)
@@ -82,8 +82,9 @@ routes:
 	runtimeManager := runtime.NewManager(store)
 	adapterRegistry := adapters.NewRegistry()
 	adapterRegistry.Register("hermes", adapters.NewHermesAdapter(registry, runtimeManager))
-	adapterRegistry.Register("openclaw", adapters.NewOpenClawAdapter(registry, runtimeManager))
-	adapterRegistry.Register("acp_comm_http", adapters.NewACPHTTPAdapter(registry, runtimeManager))
+	adapterRegistry.Register("mock_hermes", adapters.NewMockHermesAdapter(registry, runtimeManager))
+	adapterRegistry.Register("mock_openclaw", adapters.NewMockOpenClawAdapter(registry, runtimeManager))
+	adapterRegistry.Register("mock_acp_comm_http", adapters.NewMockACPHTTPAdapter(registry, runtimeManager))
 	orchestrator := core.NewOrchestrator(registry, store, runtimeManager, adapterRegistry)
 	if err := orchestrator.PreloadRegistry(context.Background()); err != nil {
 		t.Fatalf("preload registry: %v", err)

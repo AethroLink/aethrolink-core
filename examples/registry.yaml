@@ -1,6 +1,6 @@
 runtimes:
-  hermes:
-    adapter: hermes
+  mock_hermes:
+    adapter: mock_hermes
     launch:
       mode: managed
       commands:
@@ -15,8 +15,8 @@ runtimes:
       - code.review
       - research.topic
 
-  openclaw:
-    adapter: openclaw
+  mock_openclaw:
+    adapter: mock_openclaw
     launch:
       mode: on_demand
       command: ["go", "run", "./cmd/fake-acp-client-agent"]
@@ -28,8 +28,8 @@ runtimes:
       - thread.reply
       - gateway.chat
 
-  researcher_http:
-    adapter: acp_comm_http
+  mock_researcher_http:
+    adapter: mock_acp_comm_http
     endpoint: http://127.0.0.1:9102
     healthcheck: http://127.0.0.1:9102/ping
     launch:
@@ -41,16 +41,16 @@ runtimes:
 
 routes:
   code.patch:
-    runtime: hermes
+    runtime: mock_hermes
     runtime_options:
       profile: coder
   research.topic:
-    runtime: hermes
+    runtime: mock_hermes
     runtime_options:
       profile: research
   ui.review:
-    runtime: openclaw
+    runtime: mock_openclaw
     runtime_options:
       session_key: design
   summarize:
-    runtime: researcher_http
+    runtime: mock_researcher_http
