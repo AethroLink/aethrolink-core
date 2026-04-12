@@ -1,2 +1,26 @@
 .DS_Store
 AGENTS.md
+
+# build outputs and local runtime state
+target/
+artifacts/
+artifacts-*/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+
+# local worktree / editor noise
+.worktrees/
+worktrees/
+.vscode/
+.idea/
+
+# test/dev scratch files
+*.log
+*.tmp
+*.swp
+*.swo
+target/test-registry-*.yaml

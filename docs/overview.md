@@ -8,32 +8,53 @@ The immediate goal of `v0.1` is to let one runtime send a task to another runtim
 
 The long-term goal is to preserve the same core task model while adding decentralized transport, discovery, identity, and external protocol bindings without rewriting the core.
 
-## Core Principles
+## Implementation direction
 
-1. **Runtime-first, not protocol-first**
+AethroLink is now Go-first.
+
+This is an execution decision, not an ideological one.
+
+Why Go right now:
+
+- simpler binaries and deployment
+- lower operational friction while the system is still proving its first useful slice
+- faster iteration for HTTP control plane, supervision, and adapter wiring
+- easier onboarding for contributors relative to a multi-crate systems-heavy build
+- a clear migration path away from the prior Rust prototype toward the active Go implementation
+
+Design constraints do not change:
+
+- the core must remain runtime-agnostic
+- adapters must isolate external protocol details
+- transport, discovery, and identity must remain separate concerns
+- future decentralization should still be possible without rewriting the core
+
+## Core principles
+
+1. Runtime-first, not protocol-first
    - AethroLink routes tasks to runtimes.
-   - Protocols such as Agent Communication Protocol, Agent Client Protocol, A2A, or native gateway APIs are adapter implementation details.
+   - Protocols such as ACP, A2A, or gateway-native APIs are adapter implementation details.
 
-2. **Transport is separate from execution**
+2. Transport is separate from execution
    - Runtime execution and network delivery are separate concerns.
    - `v0.1` only needs local loopback transport.
    - Future versions can add libp2p, Waku, or other decentralized transports without changing runtime adapters.
 
-3. **Profiles and sessions are adapter-private**
+3. Profiles and sessions are adapter-private
    - Hermes profiles are not separate public targets.
    - OpenClaw session keys are not separate public targets.
    - These are internal execution contexts owned by the adapter.
 
-4. **AethroLink owns task lifecycle**
+4. AethroLink owns task lifecycle
    - Local `task_id` is always primary.
    - Remote protocol IDs such as ACP `run_id` are secondary bindings.
    - This allows AethroLink to track work before a target runtime is even started.
 
-5. **Future decentralized compatibility is a design constraint now**
+5. Future decentralized compatibility is a design constraint now
    - Discovery, identity, transport, and runtime execution must be separated from day one.
    - The local MVP should not paint the system into a centralized-only architecture.
 
-## What AethroLink Is
+## What AethroLink is
 
 AethroLink is a local control plane and future protocol node with these responsibilities:
 
@@ -46,9 +67,9 @@ AethroLink is a local control plane and future protocol node with these responsi
 - persist task history and artifacts
 - support resume and cancel flows
 
-## What AethroLink Is Not in v0.1
+## What AethroLink is not in v0.1
 
-The first version does **not** implement:
+The first version does not implement:
 
 - blockchain anchoring
 - decentralized identity
@@ -61,7 +82,7 @@ The first version does **not** implement:
 
 The first version must stay local, deterministic, and testable on one machine.
 
-## High-Level Architecture
+## High-level architecture
 
 ```mermaid
 flowchart LR
@@ -75,7 +96,7 @@ flowchart LR
     ORCH[Task Orchestrator]
     ROUTER[Intent Router]
     STATE[Task State Machine]
-    EVT[Event Bus]
+    EVT[Event Log]
     STORE[(SQLite and Artifact Store)]
   end
 
@@ -111,13 +132,14 @@ flowchart LR
 
   HTTP --> ORCH
   CLI --> ORCH
-
   ORCH --> ROUTER
   ORCH --> STATE
   ORCH --> EVT
   ORCH --> STORE
   ORCH --> ADH
   ORCH --> TX
+  ORCH --> DISC
+  ORCH --> ID
 
   ADH --> SUP
   ADH --> H
@@ -137,14 +159,11 @@ flowchart LR
   TX --> LOOP
   TX --> P2P
   TX --> WAKU
-
-  ORCH --> DISC
-  ORCH --> ID
 ```
 
-## Architecture Layers
+## Architecture layers
 
-### 1. Local Control API
+### 1. Local control API
 
 This is the operator-facing surface.
 
@@ -158,7 +177,7 @@ It should expose:
 
 This API should remain stable even as internal runtime adapters evolve.
 
-### 2. Core Orchestration Layer
+### 2. Core orchestration layer
 
 This is the heart of AethroLink.
 
@@ -174,7 +193,7 @@ It is responsible for:
 
 The core must remain protocol-agnostic.
 
-### 3. Execution Plane
+### 3. Execution plane
 
 This layer hosts runtime adapters and process supervision.
 
@@ -187,7 +206,7 @@ This layer includes:
 - sticky runtime leases when continuity is needed
 - protocol-specific drivers hidden behind adapters
 
-### 4. Protocol Drivers
+### 4. Protocol drivers
 
 These are low-level protocol implementations used by adapters.
 
@@ -199,7 +218,7 @@ Examples:
 Drivers should not contain routing logic or orchestration policy.
 They are translation and transport helpers for adapters.
 
-### 5. Network Plane
+### 5. Network plane
 
 This layer exists in `v0.1` even though it is mostly local.
 
@@ -221,11 +240,11 @@ In future versions:
 - discovery can become DHT, discv5, on-chain, or hybrid
 - identity can become DID or wallet-backed
 
-## Public Model
+## Public model
 
-AethroLink should expose **runtimes** as its public execution targets.
+AethroLink should expose runtimes as its public execution targets.
 
-It should **not** expose:
+It should not expose:
 
 - Hermes profiles as separate top-level targets
 - OpenClaw session keys as separate top-level targets
@@ -246,24 +265,24 @@ It should **not** expose:
 
 Profiles and session keys must be passed in `runtime_options`.
 
-## Core Task Model
+## Core task model
 
 The core task model must be protocol-agnostic.
 
-Example:
+Example Go type shape:
 
-```rust
-pub struct TaskEnvelope {
-    pub task_id: String,
-    pub conversation_id: String,
-    pub sender: String,
-    pub target_runtime: String,
-    pub intent: String,
-    pub payload: serde_json::Value,
-    pub runtime_options: serde_json::Value,
-    pub delivery: DeliveryPolicy,
-    pub trace: TraceContext,
-    pub metadata: serde_json::Value,
+```go
+type TaskEnvelope struct {
+    TaskID         string                 `json:"task_id"`
+    ConversationID string                 `json:"conversation_id"`
+    Sender         string                 `json:"sender"`
+    TargetRuntime  string                 `json:"target_runtime"`
+    Intent         string                 `json:"intent"`
+    Payload        map[string]any         `json:"payload"`
+    RuntimeOptions map[string]any         `json:"runtime_options"`
+    Delivery       DeliveryPolicy         `json:"delivery"`
+    Trace          TraceContext           `json:"trace"`
+    Metadata       map[string]any         `json:"metadata"`
 }
 ```
 
@@ -276,41 +295,34 @@ Adapters may translate it into:
 - gateway-native requests
 - future A2A requests
 
-## Runtime Adapter Model
+## Runtime adapter model
 
-AethroLink should define a stable runtime adapter trait.
+AethroLink should define a stable runtime adapter interface.
 
-```rust
-#[async_trait]
-pub trait RuntimeAdapter: Send + Sync {
-    fn adapter_name(&self) -> &'static str;
-    async fn capabilities(&self) -> anyhow::Result<serde_json::Value>;
-    async fn ensure_ready(&self, options: serde_json::Value) -> anyhow::Result<RuntimeLease>;
-    async fn submit(&self, task: TaskEnvelope, lease: RuntimeLease) -> anyhow::Result<RemoteHandle>;
-    async fn stream_events(
-        &self,
-        handle: RemoteHandle,
-    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<TaskEvent>> + Send>>>;
-    async fn resume(&self, handle: RemoteHandle, payload: serde_json::Value) -> anyhow::Result<()>;
-    async fn cancel(&self, handle: RemoteHandle) -> anyhow::Result<()>;
-    async fn health(&self, options: Option<serde_json::Value>) -> anyhow::Result<serde_json::Value>;
+```go
+type RuntimeAdapter interface {
+    AdapterName() string
+    Capabilities(ctx context.Context) (map[string]any, error)
+    EnsureReady(ctx context.Context, options map[string]any) (RuntimeLease, error)
+    Submit(ctx context.Context, task TaskEnvelope, lease RuntimeLease) (RemoteHandle, error)
+    StreamEvents(ctx context.Context, handle RemoteHandle) (<-chan TaskEvent, <-chan error)
+    Resume(ctx context.Context, handle RemoteHandle, payload map[string]any) error
+    Cancel(ctx context.Context, handle RemoteHandle) error
+    Health(ctx context.Context, options map[string]any) (map[string]any, error)
 }
 ```
 
 This is the most important boundary in the system.
 
-## Transport Model
+## Transport model
 
 Even though `v0.1` is local-only, transport must be modeled as a first-class abstraction.
 
-```rust
-#[async_trait]
-pub trait TransportAdapter: Send + Sync {
-    fn transport_name(&self) -> &'static str;
-    async fn publish(&self, envelope: NetworkEnvelope) -> anyhow::Result<()>;
-    async fn subscribe(
-        &self,
-    ) -> anyhow::Result<Pin<Box<dyn Stream<Item = anyhow::Result<NetworkEnvelope>> + Send>>>;
+```go
+type TransportAdapter interface {
+    TransportName() string
+    Publish(ctx context.Context, envelope NetworkEnvelope) error
+    Subscribe(ctx context.Context) (<-chan NetworkEnvelope, <-chan error)
 }
 ```
 
@@ -325,15 +337,14 @@ This prevents the local MVP from hardcoding in-process delivery assumptions into
 - `Libp2pTransport`
 - `WakuTransport`
 
-## Discovery Model
+## Discovery model
 
 Discovery must also be abstracted now.
 
-```rust
-#[async_trait]
-pub trait DiscoveryProvider: Send + Sync {
-    async fn resolve_runtime(&self, runtime_id: &str) -> anyhow::Result<RuntimeSpec>;
-    async fn list_runtimes(&self) -> anyhow::Result<Vec<RuntimeSpec>>;
+```go
+type DiscoveryProvider interface {
+    ResolveRuntime(ctx context.Context, runtimeID string) (RuntimeSpec, error)
+    ListRuntimes(ctx context.Context) ([]RuntimeSpec, error)
 }
 ```
 
@@ -348,16 +359,15 @@ pub trait DiscoveryProvider: Send + Sync {
 - on-chain pointer discovery
 - hybrid local cache and public registry discovery
 
-## Identity Model
+## Identity model
 
 Identity must be isolated from runtime adapters and transport.
 
-```rust
-#[async_trait]
-pub trait IdentityProvider: Send + Sync {
-    async fn node_id(&self) -> anyhow::Result<String>;
-    async fn sign(&self, payload: &[u8]) -> anyhow::Result<Vec<u8>>;
-    async fn verify(&self, node_id: &str, payload: &[u8], signature: &[u8]) -> anyhow::Result<bool>;
+```go
+type IdentityProvider interface {
+    NodeID(ctx context.Context) (string, error)
+    Sign(ctx context.Context, payload []byte) ([]byte, error)
+    Verify(ctx context.Context, nodeID string, payload []byte, signature []byte) (bool, error)
 }
 ```
 
@@ -371,9 +381,9 @@ pub trait IdentityProvider: Send + Sync {
 - wallet-backed identity
 - hardware-backed node identity
 
-## Runtime-Specific Adapter Behavior
+## Runtime-specific adapter behavior
 
-### Hermes Adapter
+### Hermes adapter
 
 Public runtime ID:
 
@@ -394,7 +404,7 @@ Responsibilities:
 - relaunch crashed workers when needed
 - reconstruct best-effort continuity from AethroLink storage
 
-### OpenClaw Adapter
+### OpenClaw adapter
 
 Public runtime ID:
 
@@ -404,7 +414,7 @@ Rules:
 
 - Gateway session keys are internal execution contexts.
 - Session selection comes from `runtime_options.session_key`.
-- The adapter owns Gateway continuity semantics.
+- The adapter owns gateway continuity semantics.
 
 Responsibilities:
 
@@ -413,7 +423,7 @@ Responsibilities:
 - translate tasks into ACP client interactions
 - reuse or create session mappings internally
 
-### ACP Communication HTTP Adapter
+### ACP communication HTTP adapter
 
 Public runtime ID:
 
@@ -432,7 +442,7 @@ Responsibilities:
 - stream remote run events
 - support resume and cancel
 
-## State Machine
+## State machine
 
 AethroLink should own the local task state machine.
 
@@ -451,7 +461,7 @@ This local state machine must exist even when no remote protocol ID exists yet.
 
 That is critical for launch-if-down behavior.
 
-## Persistence Model
+## Persistence model
 
 Use SQLite in `v0.1`.
 
@@ -473,7 +483,7 @@ Persistence rules:
 
 This separation is important for future migration to content-addressed or decentralized storage.
 
-## Registry Model
+## Registry model
 
 Use a static `registry.yaml` in `v0.1`.
 
@@ -486,9 +496,9 @@ runtimes:
     launch:
       mode: managed
       commands:
-        coder: ["coder", "acp"]
-        research: ["research", "acp"]
-        ops: ["ops", "acp"]
+        coder: ["hermes", "-p", "coder", "acp"]
+        research: ["hermes", "-p", "research", "acp"]
+        ops: ["hermes", "-p", "ops", "acp"]
     defaults:
       profile: coder
       session_strategy: sticky-process
@@ -527,7 +537,7 @@ runtimes:
       - research.topic
 ```
 
-## Routing Model
+## Routing model
 
 Routing must be based on intent and capabilities.
 
@@ -556,7 +566,7 @@ routes:
     runtime: researcher_http
 ```
 
-## API Surface
+## API surface
 
 The local control API should include:
 
@@ -570,91 +580,95 @@ The local control API should include:
 - `POST /v1/runtimes/:runtime_id/start`
 - `POST /v1/runtimes/:runtime_id/stop`
 
-## Recommended Rust Workspace
+## Recommended Go module layout
 
 ```text
 aethrolink-core/
-  Cargo.toml
-  crates/
-    alink-types/
-    alink-core/
-    alink-storage/
-    alink-runtime/
-    alink-drivers/
-    alink-adapters/
-    alink-transport/
-    alink-api/
+  go.mod
+  cmd/
     alink-node/
     alink-cli/
+    fake-acp-client-agent/
+    fake-acp-comm-agent/
+  internal/
+    api/
+    core/
+    adapters/
+    drivers/
+    runtime/
+    storage/
+    transport/
+    config/
+  pkg/
+    types/
+    contracts/
   docs/
     overview.md
   examples/
     registry.yaml
-    fake_acp_comm_agent/
-    fake_acp_client_agent/
   tests/
     integration/
 ```
 
-## Crate Responsibilities
+## Package responsibilities
 
-### `alink-types`
+### `pkg/types`
 
-Shared models and traits.
+Shared models and interfaces that can safely be imported across the module.
 
-### `alink-core`
+### `internal/core`
 
-Orchestrator, router, state machine, event bus.
+Orchestrator, router, state machine, and task service.
 
-### `alink-storage`
+### `internal/storage`
 
-SQLite repositories, artifact store, projections.
+SQLite repositories, artifact store, and persistence helpers.
 
-### `alink-runtime`
+### `internal/runtime`
 
-Supervisor, process launching, lease pooling, health checks.
+Supervisor, process launching, lease pooling, and health checks.
 
-### `alink-drivers`
+### `internal/drivers`
 
 Protocol driver implementations:
 
 - ACP client stdio
 - ACP communication HTTP
 
-### `alink-adapters`
+### `internal/adapters`
 
 Runtime adapter implementations:
 
 - HermesAdapter
 - OpenClawAdapter
-- AcpCommHttpAdapter
+- AcpCommHTTPAdapter
 - GatewayNativeAdapter stub
 - A2AAdapter stub
 
-### `alink-transport`
+### `internal/transport`
 
 Transport abstractions and local loopback transport.
 
-### `alink-api`
+### `internal/api`
 
 HTTP API and SSE surfaces.
 
-### `alink-node`
+### `cmd/alink-node`
 
 Daemon binary.
 
-### `alink-cli`
+### `cmd/alink-cli`
 
 Operator CLI.
 
-## Testing Requirements
+## Testing requirements
 
 The system must be testable without real Hermes or real OpenClaw.
 
 Required testing approach:
 
-- fake ACP client stdio servers in Rust
-- fake ACP communication HTTP server in Rust
+- fake ACP client stdio servers in Go
+- fake ACP communication HTTP server in Go
 - integration tests for:
   - Hermes profile routing through runtime options
   - OpenClaw session continuity through runtime options
@@ -663,7 +677,7 @@ Required testing approach:
   - ordered SSE event streaming
   - persistence across process restart
 
-## Design Constraints for Future Decentralization
+## Design constraints for future decentralization
 
 These constraints must be respected in `v0.1`:
 
@@ -671,13 +685,13 @@ These constraints must be respected in `v0.1`:
 2. Do not let transport-specific types leak into runtime adapters.
 3. Do not let protocol-specific IDs become primary local IDs.
 4. Keep `NetworkEnvelope` transport-agnostic.
-5. Keep discovery and identity behind real traits, not placeholders.
+5. Keep discovery and identity behind real interfaces, not placeholders.
 6. Keep storage abstract enough that artifact backends can change later.
 7. Keep the local orchestrator valid even when remote runtimes are unavailable.
 
 ## Summary
 
-AethroLink `v0.1` should be implemented as a **local-first Rust orchestration node** with:
+AethroLink `v0.1` should be implemented as a local-first Go orchestration node with:
 
 - a stable runtime-based task API
 - runtime adapters for Hermes, OpenClaw, and HTTP ACP runtimes
