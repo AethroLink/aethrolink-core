@@ -44,6 +44,7 @@ func main() {
 	runtimeManager := runtime.NewManager(store)
 	adapterRegistry := adapters.NewRegistry()
 	adapterRegistry.Register("hermes", adapters.NewHermesAdapter(registry, runtimeManager))
+	adapterRegistry.Register("openclaw", adapters.NewOpenClawAdapter(registry, runtimeManager))
 	adapterRegistry.Register("mock_hermes", adapters.NewMockHermesAdapter(registry, runtimeManager))
 	adapterRegistry.Register("mock_openclaw", adapters.NewMockOpenClawAdapter(registry, runtimeManager))
 	adapterRegistry.Register("mock_acp_comm_http", adapters.NewMockACPHTTPAdapter(registry, runtimeManager))

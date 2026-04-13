@@ -184,6 +184,19 @@ type RemoteRef struct {
 	RemoteSessionID   string `json:"remote_session_id,omitempty"`
 }
 
+type SessionBinding struct {
+	RuntimeID       string         `json:"runtime_id"`
+	SubcontextKey   string         `json:"subcontext_key"`
+	StickyKey       string         `json:"sticky_key"`
+	Adapter         string         `json:"adapter"`
+	RemoteSessionID string         `json:"remote_session_id"`
+	Metadata        map[string]any `json:"metadata,omitempty"`
+	CreatedAt       time.Time      `json:"created_at"`
+	UpdatedAt       time.Time      `json:"updated_at"`
+	LastUsedAt      time.Time      `json:"last_used_at"`
+	LastActivityAt  time.Time      `json:"last_activity_at"`
+}
+
 type TaskError struct {
 	Reason string `json:"reason"`
 	Detail string `json:"detail,omitempty"`

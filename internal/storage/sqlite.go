@@ -81,6 +81,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_runtime_status ON tasks(resolved_runtime, status)`,
+		`CREATE TABLE IF NOT EXISTS session_bindings (runtime_id TEXT NOT NULL, subcontext_key TEXT NOT NULL, sticky_key TEXT NOT NULL, adapter TEXT NOT NULL, remote_session_id TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_used_at TEXT NOT NULL, last_activity_at TEXT NOT NULL, PRIMARY KEY(runtime_id, subcontext_key, sticky_key))`,
+		`CREATE INDEX IF NOT EXISTS idx_session_bindings_runtime_subcontext ON session_bindings(runtime_id, subcontext_key)`,
 		`CREATE TABLE IF NOT EXISTS task_events (event_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, source TEXT NOT NULL, message TEXT, data_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(task_id, seq))`,
 		`CREATE INDEX IF NOT EXISTS idx_task_events_task_seq ON task_events(task_id, seq)`,
 		`CREATE TABLE IF NOT EXISTS artifacts (artifact_id TEXT PRIMARY KEY, media_type TEXT NOT NULL, relative_path TEXT NOT NULL, size_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL)`,
@@ -279,6 +281,47 @@ func (s *SQLiteStore) ListEvents(ctx context.Context, taskID string) ([]atypes.T
 	return events, nil
 }
 
+func (s *SQLiteStore) UpsertSessionBinding(ctx context.Context, binding atypes.SessionBinding) error {
+	metadataJSON, err := json.Marshal(binding.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal session binding metadata: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO session_bindings(runtime_id, subcontext_key, sticky_key, adapter, remote_session_id, metadata_json, created_at, updated_at, last_used_at, last_activity_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(runtime_id, subcontext_key, sticky_key) DO UPDATE SET
+			adapter = excluded.adapter,
+			remote_session_id = excluded.remote_session_id,
+			metadata_json = excluded.metadata_json,
+			updated_at = excluded.updated_at,
+			last_used_at = excluded.last_used_at,
+			last_activity_at = excluded.last_activity_at
+	`, binding.RuntimeID, binding.SubcontextKey, binding.StickyKey, binding.Adapter, binding.RemoteSessionID, string(metadataJSON), binding.CreatedAt.Format(time.RFC3339Nano), binding.UpdatedAt.Format(time.RFC3339Nano), binding.LastUsedAt.Format(time.RFC3339Nano), binding.LastActivityAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("upsert session binding: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GetSessionBinding(ctx context.Context, runtimeID, subcontextKey, stickyKey string) (atypes.SessionBinding, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT runtime_id, subcontext_key, sticky_key, adapter, remote_session_id, metadata_json, created_at, updated_at, last_used_at, last_activity_at
+		FROM session_bindings WHERE runtime_id = ? AND subcontext_key = ? AND sticky_key = ?
+	`, runtimeID, subcontextKey, stickyKey)
+	return scanSessionBinding(row)
+}
+
+func (s *SQLiteStore) TouchSessionBindingActivity(ctx context.Context, runtimeID, subcontextKey, stickyKey string, touchedAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE session_bindings SET updated_at = ?, last_activity_at = ?
+		WHERE runtime_id = ? AND subcontext_key = ? AND sticky_key = ?
+	`, touchedAt.Format(time.RFC3339Nano), touchedAt.Format(time.RFC3339Nano), runtimeID, subcontextKey, stickyKey)
+	if err != nil {
+		return fmt.Errorf("touch session binding activity: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) InsertLease(ctx context.Context, lease atypes.RuntimeLease) error {
 	metadataJSON, err := json.Marshal(lease.Metadata)
 	if err != nil {
@@ -400,6 +443,41 @@ func scanEvent(scanner interface{ Scan(dest ...any) error }) (atypes.TaskEvent, 
 	}
 	event.CreatedAt = parsed
 	return event, nil
+}
+
+func scanSessionBinding(scanner interface{ Scan(dest ...any) error }) (atypes.SessionBinding, error) {
+	var (
+		binding        atypes.SessionBinding
+		metadataJSON   string
+		createdAt      string
+		updatedAt      string
+		lastUsedAt     string
+		lastActivityAt string
+	)
+	if err := scanner.Scan(&binding.RuntimeID, &binding.SubcontextKey, &binding.StickyKey, &binding.Adapter, &binding.RemoteSessionID, &metadataJSON, &createdAt, &updatedAt, &lastUsedAt, &lastActivityAt); err != nil {
+		return atypes.SessionBinding{}, err
+	}
+	if err := json.Unmarshal([]byte(metadataJSON), &binding.Metadata); err != nil {
+		return atypes.SessionBinding{}, fmt.Errorf("unmarshal session binding metadata: %w", err)
+	}
+	var err error
+	binding.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return atypes.SessionBinding{}, fmt.Errorf("parse session binding created_at: %w", err)
+	}
+	binding.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return atypes.SessionBinding{}, fmt.Errorf("parse session binding updated_at: %w", err)
+	}
+	binding.LastUsedAt, err = time.Parse(time.RFC3339Nano, lastUsedAt)
+	if err != nil {
+		return atypes.SessionBinding{}, fmt.Errorf("parse session binding last_used_at: %w", err)
+	}
+	binding.LastActivityAt, err = time.Parse(time.RFC3339Nano, lastActivityAt)
+	if err != nil {
+		return atypes.SessionBinding{}, fmt.Errorf("parse session binding last_activity_at: %w", err)
+	}
+	return binding, nil
 }
 
 func nullString(value string) any {
