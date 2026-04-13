@@ -203,6 +203,8 @@ func NewManager(store *storage.SQLiteStore) *Manager {
 	return &Manager{store: store, entries: map[string]runtimeEntry{}}
 }
 
+func (m *Manager) Store() *storage.SQLiteStore { return m.store }
+
 func entryKey(runtimeID, subcontextKey string) string {
 	if subcontextKey == "" {
 		subcontextKey = "default"
