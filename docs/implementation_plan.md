@@ -297,16 +297,18 @@ Exit criteria:
 
 Implement in `cmd/alink-cli`:
 
-- submit task
+- register local agent
+- heartbeat local agent
+- submit task through the node
 - inspect task
 - tail events
-- list runtimes
+- list runtimes or agents
 
 This phase is lower priority than server correctness.
 
 Exit criteria:
 
-- CLI can exercise the main flows locally
+- CLI can exercise the main local agent control-plane flows
 
 ## Phase 13 — Integration test sweep
 

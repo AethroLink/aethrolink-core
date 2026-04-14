@@ -2,12 +2,11 @@ package adapters
 
 import (
 	"context"
-	"os"
 	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/aethrolink/aethrolink-core/internal/config"
+	"github.com/aethrolink/aethrolink-core/internal/agents"
 	"github.com/aethrolink/aethrolink-core/internal/runtime"
 	"github.com/aethrolink/aethrolink-core/internal/storage"
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
@@ -55,24 +54,29 @@ func TestOpenClawRecoverFinalTextUsesSessionLoadReplay(t *testing.T) {
 func newOpenClawAdapterForRecoveryTest(t *testing.T) *ACPAdapter {
 	t.Helper()
 	root := filepath.Clean(filepath.Join("..", ".."))
-	registryPath := filepath.Join(t.TempDir(), "registry.yaml")
-	registryYAML := []byte("runtimes:\n  openclaw_test:\n    adapter: acp\n    dialect: openclaw\n    launch:\n      mode: managed\n      command: [\"go\", \"run\", \"" + root + "/cmd/fake-acp-client-agent\"]\n    defaults:\n      session_key: design\n    capabilities:\n      - ui.review\n")
-	if err := os.WriteFile(registryPath, registryYAML, 0o644); err != nil {
-		t.Fatalf("write registry: %v", err)
-	}
-	registry, err := config.LoadRegistry(registryPath)
-	if err != nil {
-		t.Fatalf("load registry: %v", err)
-	}
 	tmp := t.TempDir()
 	store, err := storage.Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	manager := runtime.NewManager(store)
+	agentService := agents.NewService(store)
+	if _, err := agentService.Register(context.Background(), atypes.AgentRegistrationRequest{
+		DisplayName:   "openclaw-test",
+		RuntimeKind:   "openclaw",
+		TransportKind: "local_managed",
+		RuntimeID:     "openclaw_test",
+		Adapter:       "acp",
+		Dialect:       "openclaw",
+		Launch:        atypes.LaunchSpec{Mode: atypes.LaunchModeManaged, Command: []string{"go", "run", root + "/cmd/fake-acp-client-agent"}},
+		Defaults:      map[string]any{"session_key": "design"},
+		Capabilities:  []string{"ui.review"},
+	}); err != nil {
+		t.Fatalf("register agent: %v", err)
+	}
 	t.Cleanup(func() {
 		_ = manager.StopAll(context.Background())
 		_ = store.Close()
 	})
-	return NewACPAdapter(registry, manager)
+	return NewACPAdapter(agentService, manager)
 }

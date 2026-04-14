@@ -3,74 +3,70 @@ package api
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/aethrolink/aethrolink-core/internal/adapters"
-	"github.com/aethrolink/aethrolink-core/internal/config"
+	"github.com/aethrolink/aethrolink-core/internal/agents"
 	"github.com/aethrolink/aethrolink-core/internal/core"
 	"github.com/aethrolink/aethrolink-core/internal/runtime"
 	"github.com/aethrolink/aethrolink-core/internal/storage"
+	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
 
 func setupRealAdapterServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
 	t.Helper()
 	root := filepath.Clean(filepath.Join("..", ".."))
-	registryPath := filepath.Join(t.TempDir(), "registry.yaml")
-	content := fmt.Sprintf(`runtimes:
-  hermes_real_test:
-    adapter: acp
-    dialect: hermes
-    launch:
-      mode: managed
-      command: ["go", "run", "%s/cmd/fake-acp-client-agent"]
-    defaults:
-      executor: coder
-    capabilities:
-      - code.patch
-  openclaw_real_test:
-    adapter: acp
-    dialect: openclaw
-    launch:
-      mode: managed
-      command: ["go", "run", "%s/cmd/fake-acp-client-agent"]
-    defaults:
-      session_key: main
-    capabilities:
-      - ui.review
-`, root, root)
-	if err := os.WriteFile(registryPath, []byte(content), 0o644); err != nil {
-		t.Fatalf("write registry: %v", err)
-	}
-	registry, err := config.LoadRegistry(registryPath)
-	if err != nil {
-		t.Fatalf("load registry: %v", err)
-	}
 	tmp := t.TempDir()
 	store, err := storage.Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
 	runtimeManager := runtime.NewManager(store)
+	agentService := agents.NewService(store)
+	registerRealTestAgent(t, agentService, atypes.AgentRegistrationRequest{
+		DisplayName:   "hermes-real-test",
+		RuntimeKind:   "hermes",
+		TransportKind: "local_managed",
+		RuntimeID:     "hermes_real_test",
+		Adapter:       "acp",
+		Dialect:       "hermes",
+		Launch:        atypes.LaunchSpec{Mode: atypes.LaunchModeManaged, Command: []string{"go", "run", root + "/cmd/fake-acp-client-agent"}},
+		Defaults:      map[string]any{"executor": "coder"},
+		Capabilities:  []string{"code.patch"},
+	})
+	registerRealTestAgent(t, agentService, atypes.AgentRegistrationRequest{
+		DisplayName:   "openclaw-real-test",
+		RuntimeKind:   "openclaw",
+		TransportKind: "local_managed",
+		RuntimeID:     "openclaw_real_test",
+		Adapter:       "acp",
+		Dialect:       "openclaw",
+		Launch:        atypes.LaunchSpec{Mode: atypes.LaunchModeManaged, Command: []string{"go", "run", root + "/cmd/fake-acp-client-agent"}},
+		Defaults:      map[string]any{"session_key": "main"},
+		Capabilities:  []string{"ui.review"},
+	})
 	adapterRegistry := adapters.NewRegistry()
-	adapterRegistry.Register("acp", adapters.NewACPAdapter(registry, runtimeManager))
-	orchestrator := core.NewOrchestrator(registry, store, runtimeManager, adapterRegistry)
-	if err := orchestrator.PreloadRegistry(context.Background()); err != nil {
-		t.Fatalf("preload registry: %v", err)
-	}
-	server := httptest.NewServer(NewServer(orchestrator))
+	adapterRegistry.Register("acp", adapters.NewACPAdapter(agentService, runtimeManager))
+	orchestrator := core.NewOrchestrator(agentService, store, runtimeManager, adapterRegistry)
+	server := httptest.NewServer(NewServer(orchestrator, agentService))
 	t.Cleanup(func() {
 		_ = orchestrator.StopAllRuntimeProcesses(context.Background())
 		server.Close()
 		_ = store.Close()
 	})
 	return server, orchestrator
+}
+
+func registerRealTestAgent(t *testing.T, svc *agents.Service, req atypes.AgentRegistrationRequest) {
+	t.Helper()
+	if _, err := svc.Register(context.Background(), req); err != nil {
+		t.Fatalf("register real test agent %s: %v", req.DisplayName, err)
+	}
 }
 
 func createTaskForTest(t *testing.T, baseURL string, body string) map[string]any {

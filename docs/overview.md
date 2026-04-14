@@ -59,6 +59,7 @@ Design constraints do not change:
 AethroLink is a local control plane and future protocol node with these responsibilities:
 
 - receive task requests
+- register local agents and runtimes with lease-based presence
 - resolve a target runtime
 - ensure the runtime is ready
 - launch the runtime if it is down
@@ -177,6 +178,13 @@ It should expose:
 
 This API should remain stable even as internal runtime adapters evolve.
 
+It now also acts as the **agent control plane** for local agents that want to:
+
+- register themselves with the node
+- refresh liveness via heartbeat
+- invoke tasks through the node instead of calling runtimes directly
+- retrieve task state and stream task events
+
 ### 2. Core orchestration layer
 
 This is the heart of AethroLink.
@@ -190,6 +198,10 @@ It is responsible for:
 - persisting task state transitions
 - consuming event streams from adapters
 - exposing ordered task events to clients
+
+The orchestration layer also owns the durable registry of agents that have
+registered with the local node. Registration is a control-plane concern, not a
+runtime-adapter concern.
 
 The core must remain protocol-agnostic.
 
@@ -526,6 +538,11 @@ This separation is important for future migration to content-addressed or decent
 ## Registry model
 
 Use a static `registry.yaml` in `v0.1`.
+
+Static runtime registry and dynamic agent registry are intentionally separate:
+
+- `registry.yaml` describes node-known runtime targets and routes
+- the `agents` table describes agents that have actively registered with the node
 
 Example shape:
 

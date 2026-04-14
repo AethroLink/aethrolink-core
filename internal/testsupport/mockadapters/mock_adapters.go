@@ -7,7 +7,6 @@ import (
 	"sync"
 
 	"github.com/aethrolink/aethrolink-core/internal/adapters"
-	"github.com/aethrolink/aethrolink-core/internal/config"
 	"github.com/aethrolink/aethrolink-core/internal/drivers"
 	"github.com/aethrolink/aethrolink-core/internal/runtime"
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
@@ -15,19 +14,19 @@ import (
 
 // RegisterAll wires the fake adapters used by tests into a registry without
 // exposing them through the production node composition root.
-func RegisterAll(reg *adapters.Registry, registry *config.RegistryDiscovery, runtimeManager *runtime.Manager) {
-	reg.Register("mock_hermes", NewHermes(registry, runtimeManager))
-	reg.Register("mock_openclaw", NewOpenClaw(registry, runtimeManager))
-	reg.Register("mock_acp_comm_http", NewACPHTTP(registry, runtimeManager))
+func RegisterAll(reg *adapters.Registry, discovery atypes.DiscoveryProvider, runtimeManager *runtime.Manager) {
+	reg.Register("mock_hermes", NewHermes(discovery, runtimeManager))
+	reg.Register("mock_openclaw", NewOpenClaw(discovery, runtimeManager))
+	reg.Register("mock_acp_comm_http", NewACPHTTP(discovery, runtimeManager))
 }
 
 type Hermes struct {
-	registry *config.RegistryDiscovery
-	runtime  *runtime.Manager
+	discovery atypes.DiscoveryProvider
+	runtime   *runtime.Manager
 }
 
-func NewHermes(registry *config.RegistryDiscovery, runtimeManager *runtime.Manager) *Hermes {
-	return &Hermes{registry: registry, runtime: runtimeManager}
+func NewHermes(discovery atypes.DiscoveryProvider, runtimeManager *runtime.Manager) *Hermes {
+	return &Hermes{discovery: discovery, runtime: runtimeManager}
 }
 
 func (a *Hermes) AdapterName() string { return "mock_hermes" }
@@ -36,7 +35,7 @@ func (a *Hermes) Capabilities(context.Context) (map[string]any, error) {
 }
 
 func (a *Hermes) EnsureReady(ctx context.Context, runtimeID string, options map[string]any) (atypes.RuntimeLease, error) {
-	spec, err := a.registry.ResolveRuntime(ctx, runtimeID)
+	spec, err := a.discovery.ResolveRuntime(ctx, runtimeID)
 	if err != nil {
 		return atypes.RuntimeLease{}, err
 	}
@@ -134,14 +133,14 @@ func (a *Hermes) SubcontextKey(_ atypes.RuntimeSpec, runtimeOptions map[string]a
 }
 
 type OpenClaw struct {
-	registry *config.RegistryDiscovery
-	runtime  *runtime.Manager
-	mu       sync.Mutex
-	sessions map[string]string
+	discovery atypes.DiscoveryProvider
+	runtime   *runtime.Manager
+	mu        sync.Mutex
+	sessions  map[string]string
 }
 
-func NewOpenClaw(registry *config.RegistryDiscovery, runtimeManager *runtime.Manager) *OpenClaw {
-	return &OpenClaw{registry: registry, runtime: runtimeManager, sessions: map[string]string{}}
+func NewOpenClaw(discovery atypes.DiscoveryProvider, runtimeManager *runtime.Manager) *OpenClaw {
+	return &OpenClaw{discovery: discovery, runtime: runtimeManager, sessions: map[string]string{}}
 }
 
 func (a *OpenClaw) AdapterName() string { return "mock_openclaw" }
@@ -150,7 +149,7 @@ func (a *OpenClaw) Capabilities(context.Context) (map[string]any, error) {
 }
 
 func (a *OpenClaw) EnsureReady(ctx context.Context, runtimeID string, options map[string]any) (atypes.RuntimeLease, error) {
-	spec, err := a.registry.ResolveRuntime(ctx, runtimeID)
+	spec, err := a.discovery.ResolveRuntime(ctx, runtimeID)
 	if err != nil {
 		return atypes.RuntimeLease{}, err
 	}
@@ -257,13 +256,13 @@ func (a *OpenClaw) SubcontextKey(_ atypes.RuntimeSpec, runtimeOptions map[string
 }
 
 type ACPHTTP struct {
-	registry *config.RegistryDiscovery
-	runtime  *runtime.Manager
-	driver   *drivers.HTTPACPDriver
+	discovery atypes.DiscoveryProvider
+	runtime   *runtime.Manager
+	driver    *drivers.HTTPACPDriver
 }
 
-func NewACPHTTP(registry *config.RegistryDiscovery, runtimeManager *runtime.Manager) *ACPHTTP {
-	return &ACPHTTP{registry: registry, runtime: runtimeManager, driver: drivers.NewHTTPACPDriver()}
+func NewACPHTTP(discovery atypes.DiscoveryProvider, runtimeManager *runtime.Manager) *ACPHTTP {
+	return &ACPHTTP{discovery: discovery, runtime: runtimeManager, driver: drivers.NewHTTPACPDriver()}
 }
 
 func (a *ACPHTTP) AdapterName() string { return "mock_acp_comm_http" }
@@ -272,7 +271,7 @@ func (a *ACPHTTP) Capabilities(context.Context) (map[string]any, error) {
 }
 
 func (a *ACPHTTP) EnsureReady(ctx context.Context, runtimeID string, _ map[string]any) (atypes.RuntimeLease, error) {
-	spec, err := a.registry.ResolveRuntime(ctx, runtimeID)
+	spec, err := a.discovery.ResolveRuntime(ctx, runtimeID)
 	if err != nil {
 		return atypes.RuntimeLease{}, err
 	}
@@ -280,7 +279,7 @@ func (a *ACPHTTP) EnsureReady(ctx context.Context, runtimeID string, _ map[strin
 }
 
 func (a *ACPHTTP) Submit(ctx context.Context, task atypes.TaskEnvelope, _ atypes.RuntimeLease) (atypes.RemoteHandle, error) {
-	spec, err := a.registry.ResolveRuntime(ctx, task.TargetRuntime)
+	spec, err := a.discovery.ResolveRuntime(ctx, task.TargetRuntime)
 	if err != nil {
 		return atypes.RemoteHandle{}, err
 	}
