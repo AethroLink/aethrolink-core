@@ -17,6 +17,7 @@ import (
 	"github.com/aethrolink/aethrolink-core/internal/core"
 	"github.com/aethrolink/aethrolink-core/internal/runtime"
 	"github.com/aethrolink/aethrolink-core/internal/storage"
+	"github.com/aethrolink/aethrolink-core/internal/testsupport/mockadapters"
 )
 
 func setupServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
@@ -33,7 +34,7 @@ func setupServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
         research: ["go", "run", "%s/cmd/fake-acp-client-agent"]
         ops: ["go", "run", "%s/cmd/fake-acp-client-agent"]
     defaults:
-      profile: coder
+      executor: coder
     capabilities:
       - code.patch
       - research.topic
@@ -59,7 +60,7 @@ routes:
   code.patch:
     runtime: mock_hermes
     runtime_options:
-      profile: coder
+      executor: coder
   ui.review:
     runtime: mock_openclaw
     runtime_options:
@@ -81,10 +82,7 @@ routes:
 	}
 	runtimeManager := runtime.NewManager(store)
 	adapterRegistry := adapters.NewRegistry()
-	adapterRegistry.Register("hermes", adapters.NewHermesAdapter(registry, runtimeManager))
-	adapterRegistry.Register("mock_hermes", adapters.NewMockHermesAdapter(registry, runtimeManager))
-	adapterRegistry.Register("mock_openclaw", adapters.NewMockOpenClawAdapter(registry, runtimeManager))
-	adapterRegistry.Register("mock_acp_comm_http", adapters.NewMockACPHTTPAdapter(registry, runtimeManager))
+	mockadapters.RegisterAll(adapterRegistry, registry, runtimeManager)
 	orchestrator := core.NewOrchestrator(registry, store, runtimeManager, adapterRegistry)
 	if err := orchestrator.PreloadRegistry(context.Background()); err != nil {
 		t.Fatalf("preload registry: %v", err)

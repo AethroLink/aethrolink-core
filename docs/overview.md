@@ -40,10 +40,10 @@ Design constraints do not change:
    - `v0.1` only needs local loopback transport.
    - Future versions can add libp2p, Waku, or other decentralized transports without changing runtime adapters.
 
-3. Profiles and sessions are adapter-private
-   - Hermes profiles are not separate public targets.
-   - OpenClaw session keys are not separate public targets.
-   - These are internal execution contexts owned by the adapter.
+3. Executors and sessions are adapter-private
+	- Hermes executors are not separate public targets.
+	- OpenClaw session keys are not separate public targets.
+	- These are internal execution contexts owned by the adapter.
 
 4. AethroLink owns task lifecycle
    - Local `task_id` is always primary.
@@ -125,7 +125,7 @@ flowchart LR
   end
 
   subgraph RT[Runtimes]
-    HERMES[Hermes workers and profiles]
+    HERMES[Hermes workers and executors]
     OC[OpenClaw bridge and gateway sessions]
     HTTPAG[HTTP ACP agent]
   end
@@ -246,24 +246,25 @@ AethroLink should expose runtimes as its public execution targets.
 
 It should not expose:
 
-- Hermes profiles as separate top-level targets
-- OpenClaw session keys as separate top-level targets
+- raw protocol endpoints as top-level targets
+- arbitrary per-request Hermes executor names outside registry-defined runtimes
+- arbitrary per-request OpenClaw session keys outside registry-defined runtimes
 - protocol endpoints as the primary public abstraction
 
 ### Correct public model
 
-- `hermes`
-- `openclaw`
-- `researcher_http`
+- `core`
+- `research`
+- `gateway`
 
 ### Incorrect public model
 
-- `hermes_coder`
-- `hermes_research`
+- `hermes`
+- `openclaw`
 - `openclaw_main_thread`
 - `acp_http_target_1` as a protocol-first object
 
-Profiles and session keys must be passed in `runtime_options`.
+Executors and session keys remain adapter-private continuity controls in `runtime_options`.
 
 ## Core task model
 
@@ -312,7 +313,28 @@ type RuntimeAdapter interface {
 }
 ```
 
-This is the most important boundary in the system.
+This remains the orchestrator-facing boundary.
+
+For the active local-first implementation, that boundary should be layered
+internally instead of forcing one adapter type to own process lifecycle, session
+transport, dialect behavior, and event mapping directly.
+
+The current implementation direction under `RuntimeAdapter` is:
+
+- local runtime host
+  - process launch, stop, health, lease reuse
+- local session transport
+  - wire-level `initialize`, `session/new`, `session/load`, `session/prompt`,
+    `session/cancel`
+- runtime dialect
+  - subcontext keying, sticky session policy, workspace binding, notification
+    translation
+- runtime-neutral event mapping
+  - adapter-local event translation before persistence into `TaskEvent`
+
+This keeps the orchestrator contract stable while still leaving
+`TransportAdapter`, `DiscoveryProvider`, and `IdentityProvider` available for
+future A2A/decentralized node-to-node delivery.
 
 ## Transport model
 
@@ -383,32 +405,49 @@ type IdentityProvider interface {
 
 ## Runtime-specific adapter behavior
 
+### Local-first execution layering
+
+For local runtimes, the active execution stack should separate:
+
+- **host**: manages the runtime process or local daemon
+- **transport**: speaks the local protocol such as ACP over stdio
+- **dialect**: runtime-specific behavior such as Hermes executor scoping or
+  OpenClaw session-key scoping
+- **event mapping**: translates runtime-native updates into normalized local
+  runtime events before the orchestrator persists task events
+
+This is intentionally narrower than future decentralized delivery. A later
+`TransportAdapter` can carry work across AethroLink nodes without changing the
+local runtime/dialect split.
+
 ### Hermes adapter
 
 Public runtime ID:
 
-- `hermes`
+- registry-defined semantic targets such as `core`, `research`, `social`, or `media`
 
 Rules:
 
-- Hermes profiles are internal execution contexts.
-- Profile selection comes from `runtime_options.profile`.
-- The adapter owns subprocess pooling and continuity by profile.
-- The core should never know about Hermes profile lifecycles directly.
+- Hermes executors are internal execution contexts.
+- Executor selection comes from runtime defaults or `runtime_options.executor`.
+- The adapter owns subprocess pooling and continuity by executor.
+- The core should never know about Hermes executor lifecycles directly.
 
 Responsibilities:
 
-- manage sticky workers keyed by profile
+- manage sticky workers keyed by executor
 - launch Hermes ACP subprocesses on demand
 - stream events from ACP client stdio
 - relaunch crashed workers when needed
 - reconstruct best-effort continuity from AethroLink storage
+- bind local workspace/runtime details at the dialect layer instead of in the
+  orchestrator
 
 ### OpenClaw adapter
 
 Public runtime ID:
 
-- `openclaw`
+- registry-defined semantic targets such as `gateway`
 
 Rules:
 
@@ -422,6 +461,7 @@ Responsibilities:
 - persist session continuity metadata
 - translate tasks into ACP client interactions
 - reuse or create session mappings internally
+- keep Gateway/session-key specific behavior inside the dialect layer
 
 ### ACP communication HTTP adapter
 
@@ -491,32 +531,26 @@ Example shape:
 
 ```yaml
 runtimes:
-  hermes:
-    adapter: hermes
+  core:
+    adapter: acp
+    dialect: hermes
     launch:
       mode: managed
-      commands:
-        coder: ["hermes", "-p", "coder", "acp"]
-        research: ["hermes", "-p", "research", "acp"]
-        ops: ["hermes", "-p", "ops", "acp"]
+      command: ["hermes", "-p", "aethrolink-agent", "acp"]
     defaults:
-      profile: coder
+      executor: aethrolink-agent
       session_strategy: sticky-process
     capabilities:
       - code.patch
       - code.review
-      - research.topic
+      - system.design
 
-  openclaw:
-    adapter: openclaw
+  gateway:
+    adapter: acp
+    dialect: openclaw
     launch:
-      mode: on_demand
-      command:
-        [
-          "openclaw", "acp",
-          "--url", "wss://gateway-host:18789",
-          "--token", "env:OPENCLAW_TOKEN"
-        ]
+      mode: managed
+      command: ["openclaw", "acp"]
     defaults:
       session_key: main
       session_strategy: sticky-session-key
@@ -525,13 +559,14 @@ runtimes:
       - thread.reply
       - gateway.chat
 
-  researcher_http:
-    adapter: acp_comm_http
-    endpoint: http://127.0.0.1:9102
-    healthcheck: http://127.0.0.1:9102/ping
+  research:
+    adapter: acp
+    dialect: hermes
     launch:
       mode: managed
-      command: ["./researcher-agent"]
+      command: ["hermes", "-p", "mimoportal", "acp"]
+    defaults:
+      executor: mimoportal
     capabilities:
       - summarize
       - research.topic
@@ -541,29 +576,25 @@ runtimes:
 
 Routing must be based on intent and capabilities.
 
-The core should not route by Hermes profile names or OpenClaw session names directly.
+The core should not route by raw Hermes executor names or OpenClaw session names directly.
 
 Example:
 
 ```yaml
 routes:
   code.patch:
-    runtime: hermes
-    runtime_options:
-      profile: coder
+    runtime: core
 
   research.topic:
-    runtime: hermes
-    runtime_options:
-      profile: research
+    runtime: research
 
   ui.review:
-    runtime: openclaw
+    runtime: gateway
     runtime_options:
       session_key: design
 
   summarize:
-    runtime: researcher_http
+    runtime: research
 ```
 
 ## API surface
@@ -602,10 +633,10 @@ aethrolink-core/
   pkg/
     types/
     contracts/
+  configs/
+    registry.yaml
   docs/
     overview.md
-  examples/
-    registry.yaml
   tests/
     integration/
 ```
@@ -670,7 +701,7 @@ Required testing approach:
 - fake ACP client stdio servers in Go
 - fake ACP communication HTTP server in Go
 - integration tests for:
-  - Hermes profile routing through runtime options
+  - Hermes executor routing through runtime options
   - OpenClaw session continuity through runtime options
   - auto-launch when runtime is down
   - resume and cancel flows

@@ -32,6 +32,11 @@ func Open(databaseURL, artifactDir, artifactBaseURL string) (*SQLiteStore, error
 	if err != nil {
 		return nil, fmt.Errorf("open sqlite: %w", err)
 	}
+	// The local node is write-heavy during runtime launch/event persistence. A
+	// single connection plus busy_timeout avoids transient SQLITE_BUSY errors
+	// from cross-connection write contention in the same process.
+	db.SetMaxOpenConns(1)
+	db.SetMaxIdleConns(1)
 	store := &SQLiteStore{
 		db:              db,
 		artifactDir:     artifactDir,
@@ -74,6 +79,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	// small enough that a single bootstrap migration is easier to audit.
 	stmts := []string{
 		`PRAGMA journal_mode=WAL;`,
+		`PRAGMA busy_timeout=5000;`,
 		`CREATE TABLE IF NOT EXISTS runtimes (runtime_id TEXT PRIMARY KEY, adapter_kind TEXT NOT NULL, spec_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runtime_leases (lease_id TEXT PRIMARY KEY, runtime_id TEXT NOT NULL, subcontext_key TEXT, process_id TEXT, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, released_at TEXT)`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_leases_runtime_subcontext_released ON runtime_leases(runtime_id, subcontext_key, released_at)`,
@@ -255,6 +261,67 @@ func (s *SQLiteStore) AppendEvent(ctx context.Context, event atypes.TaskEvent) e
 	if err != nil {
 		return fmt.Errorf("append event: %w", err)
 	}
+	return nil
+}
+
+// AppendEventAndUpdateTask persists a task event and the corresponding task row
+// transition in one transaction so callers cannot observe divergent event/task
+// state on partial write failure.
+func (s *SQLiteStore) AppendEventAndUpdateTask(ctx context.Context, event atypes.TaskEvent, remote *atypes.RemoteHandle, lastError *atypes.TaskError, resultArtifactID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin task mutation tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	dataJSON, err := json.Marshal(event.Data)
+	if err != nil {
+		return fmt.Errorf("marshal event data: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO task_events(event_id, task_id, seq, kind, state, source, message, data_json, created_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, event.EventID, event.TaskID, event.Seq, string(event.Kind), string(event.State), string(event.Source), nullString(event.Message), string(dataJSON), event.CreatedAt.Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("append event: %w", err)
+	}
+
+	var remoteBinding, remoteExecutionID, remoteSessionID any
+	if remote != nil {
+		remoteBinding = remote.Binding
+		remoteExecutionID = nullString(remote.RemoteExecutionID)
+		remoteSessionID = nullString(remote.RemoteSessionID)
+	}
+	var lastErrorJSON any
+	if lastError != nil {
+		encoded, err := json.Marshal(lastError)
+		if err != nil {
+			return fmt.Errorf("marshal last error: %w", err)
+		}
+		lastErrorJSON = string(encoded)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE tasks
+		SET status = ?,
+		    remote_binding = COALESCE(?, remote_binding),
+		    remote_execution_id = COALESCE(?, remote_execution_id),
+		    remote_session_id = COALESCE(?, remote_session_id),
+		    last_error_json = ?,
+		    result_artifact_id = COALESCE(?, result_artifact_id),
+		    updated_at = ?
+		WHERE task_id = ?
+	`, string(event.State), remoteBinding, remoteExecutionID, remoteSessionID, lastErrorJSON, nullString(resultArtifactID), atypes.NowUTC().Format(time.RFC3339Nano), event.TaskID); err != nil {
+		return fmt.Errorf("update task state: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit task mutation tx: %w", err)
+	}
+	committed = true
 	return nil
 }
 

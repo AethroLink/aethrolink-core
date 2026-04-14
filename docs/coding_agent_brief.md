@@ -85,7 +85,7 @@ Build AethroLink Local `v0.1` as a runnable Go module that:
 - no blockchain features in v0.1
 - no libp2p or Waku implementation in v0.1
 - keep `RuntimeAdapter`, `TransportAdapter`, `DiscoveryProvider`, and `IdentityProvider` as real interfaces now
-- Hermes profiles are not public runtime IDs
+- Hermes executors are not public runtime IDs
 - OpenClaw session keys are not public runtime IDs
 - local `task_id` is always primary
 - remote protocol IDs are always secondary

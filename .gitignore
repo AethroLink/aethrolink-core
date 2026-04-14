@@ -24,3 +24,5 @@ worktrees/
 *.swp
 *.swo
 target/test-registry-*.yaml
+.omx/
+/configs/*

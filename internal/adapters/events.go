@@ -6,67 +6,67 @@ import (
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
 
-// mapACPEventToTaskEvent normalizes adapter-local ACP events into the
-// task event shape that the orchestrator persists.
-func mapACPEventToTaskEvent(taskID string, raw map[string]any) atypes.TaskEvent {
+// runtimeEventToTaskEvent converts a normalized local runtime event into the
+// orchestrator-facing persisted task event shape.
+func runtimeEventToTaskEvent(taskID string, event atypes.LocalRuntimeEvent) atypes.TaskEvent {
+	return atypes.TaskEvent{
+		EventID:   atypes.NewID(),
+		TaskID:    taskID,
+		Kind:      runtimeEventKindToTaskEventKind(event),
+		State:     event.State,
+		Source:    atypes.EventSourceAdapter,
+		Message:   event.Message,
+		Data:      cloneRuntimeEventData(event.Data),
+		CreatedAt: event.CreatedAt,
+	}
+}
+
+func runtimeEventKindToTaskEventKind(event atypes.LocalRuntimeEvent) atypes.TaskEventKind {
+	if event.Kind == atypes.LocalRuntimeEventTerminal {
+		switch event.State {
+		case atypes.TaskStatusCompleted:
+			return atypes.TaskEventTaskCompleted
+		case atypes.TaskStatusFailed:
+			return atypes.TaskEventTaskFailed
+		case atypes.TaskStatusCancelled:
+			return atypes.TaskEventTaskCancelled
+		}
+	}
+	if event.State == atypes.TaskStatusAwaitingInput {
+		return atypes.TaskEventTaskAwaitingInput
+	}
+	return atypes.TaskEventTaskRunning
+}
+
+// acpNotificationToRuntimeEvent normalizes ACP adapter-local notifications into
+// the runtime-neutral event shape used by the local-first adapter stack.
+func acpNotificationToRuntimeEvent(raw map[string]any) atypes.LocalRuntimeEvent {
 	kind, _ := raw["kind"].(string)
 	message, _ := raw["message"].(string)
 	data, _ := raw["data"].(map[string]any)
-	status := atypes.TaskStatusRunning
-	eventKind := atypes.TaskEventTaskRunning
+	state := atypes.TaskStatusRunning
+	eventKind := atypes.LocalRuntimeEventProgress
 	switch kind {
 	case "task.awaiting_input":
-		status = atypes.TaskStatusAwaitingInput
-		eventKind = atypes.TaskEventTaskAwaitingInput
-	case "task.completed":
-		status = atypes.TaskStatusCompleted
-		eventKind = atypes.TaskEventTaskCompleted
-	case "task.failed":
-		status = atypes.TaskStatusFailed
-		eventKind = atypes.TaskEventTaskFailed
-	case "task.cancelled":
-		status = atypes.TaskStatusCancelled
-		eventKind = atypes.TaskEventTaskCancelled
-	default:
-		status = atypes.TaskStatusRunning
-		eventKind = atypes.TaskEventTaskRunning
-	}
-	return atypes.TaskEvent{EventID: atypes.NewID(), TaskID: taskID, Kind: eventKind, State: status, Source: atypes.EventSourceAdapter, Message: message, Data: data, CreatedAt: atypes.NowUTC()}
-}
-
-// mapHTTPRunToTaskEvent converts polled HTTP runtime state into the same
-// task event contract used by local/stdio adapters.
-func mapHTTPRunToTaskEvent(taskID string, raw map[string]any) atypes.TaskEvent {
-	status, _ := raw["status"].(string)
-	data := map[string]any{}
-	if result, ok := raw["result"].(map[string]any); ok {
-		data["result"] = result
-	}
-	if reason, ok := raw["reason"].(string); ok && reason != "" {
-		data["reason"] = reason
-	}
-	kind := atypes.TaskEventTaskRunning
-	state := atypes.TaskStatusRunning
-	message := "Task running"
-	switch status {
-	case "awaiting_input":
-		kind = atypes.TaskEventTaskAwaitingInput
 		state = atypes.TaskStatusAwaitingInput
-		message = "Runtime requires additional input"
-	case "completed":
-		kind = atypes.TaskEventTaskCompleted
+		eventKind = atypes.LocalRuntimeEventStateChange
+	case "task.completed":
 		state = atypes.TaskStatusCompleted
-		message = "Task completed"
-	case "failed":
-		kind = atypes.TaskEventTaskFailed
+		eventKind = atypes.LocalRuntimeEventTerminal
+	case "task.failed":
 		state = atypes.TaskStatusFailed
-		message = "Task failed"
-	case "cancelled":
-		kind = atypes.TaskEventTaskCancelled
+		eventKind = atypes.LocalRuntimeEventTerminal
+	case "task.cancelled":
 		state = atypes.TaskStatusCancelled
-		message = "Task cancelled"
+		eventKind = atypes.LocalRuntimeEventTerminal
 	}
-	return atypes.TaskEvent{EventID: atypes.NewID(), TaskID: taskID, Kind: kind, State: state, Source: atypes.EventSourceAdapter, Message: message, Data: data, CreatedAt: atypes.NowUTC()}
+	return atypes.LocalRuntimeEvent{
+		Kind:      eventKind,
+		State:     state,
+		Message:   message,
+		Data:      cloneRuntimeEventData(data),
+		CreatedAt: atypes.NowUTC(),
+	}
 }
 
 func marshalPayloadJSON(v map[string]any) (string, error) {
@@ -75,4 +75,19 @@ func marshalPayloadJSON(v map[string]any) (string, error) {
 		return "", err
 	}
 	return string(b), nil
+}
+
+func cloneRuntimeEventData(in map[string]any) map[string]any {
+	if in == nil {
+		return map[string]any{}
+	}
+	out := make(map[string]any, len(in))
+	for key, value := range in {
+		if nested, ok := value.(map[string]any); ok {
+			out[key] = cloneRuntimeEventData(nested)
+			continue
+		}
+		out[key] = value
+	}
+	return out
 }

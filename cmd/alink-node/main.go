@@ -18,7 +18,7 @@ func main() {
 	var (
 		host         = flag.String("host", "127.0.0.1", "bind host")
 		port         = flag.String("port", "7777", "bind port")
-		registryPath = flag.String("registry", "examples/registry.yaml", "path to runtime registry")
+		registryPath = flag.String("registry", "configs/registry.yaml", "path to runtime registry")
 		databaseURL  = flag.String("database", "sqlite://./aethrolink.db", "sqlite database path")
 		artifactDir  = flag.String("artifact-dir", "artifacts", "artifact directory")
 	)
@@ -43,11 +43,7 @@ func main() {
 	// runtime-specific behavior, and the orchestrator owns task lifecycle.
 	runtimeManager := runtime.NewManager(store)
 	adapterRegistry := adapters.NewRegistry()
-	adapterRegistry.Register("hermes", adapters.NewHermesAdapter(registry, runtimeManager))
-	adapterRegistry.Register("openclaw", adapters.NewOpenClawAdapter(registry, runtimeManager))
-	adapterRegistry.Register("mock_hermes", adapters.NewMockHermesAdapter(registry, runtimeManager))
-	adapterRegistry.Register("mock_openclaw", adapters.NewMockOpenClawAdapter(registry, runtimeManager))
-	adapterRegistry.Register("mock_acp_comm_http", adapters.NewMockACPHTTPAdapter(registry, runtimeManager))
+	adapterRegistry.Register("acp", adapters.NewACPAdapter(registry, runtimeManager))
 	orchestrator := core.NewOrchestrator(registry, store, runtimeManager, adapterRegistry)
 	if err := orchestrator.PreloadRegistry(context.Background()); err != nil {
 		log.Fatalf("preload registry: %v", err)

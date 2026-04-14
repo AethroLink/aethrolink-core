@@ -234,7 +234,7 @@ func (m *Manager) EnsureProcess(ctx context.Context, runtimeID, subcontextKey st
 		m.mu.Unlock()
 		return lease, nil
 	}
-	// stdio runtimes are keyed by runtime+subcontext so profiles/sessions can be
+	// stdio runtimes are keyed by runtime+subcontext so executor/session scopes can be
 	// reused independently without bleeding state into each other.
 	launchID, err := m.store.InsertLaunchHistory(ctx, runtimeID, subcontextKey, command, "", "launching", "")
 	if err != nil {

@@ -24,7 +24,7 @@ func TestSQLiteStorePersistsTaskAndEvents(t *testing.T) {
 		Sender:          "local",
 		Intent:          "code.patch",
 		ResolvedRuntime: "hermes",
-		RuntimeOptions:  map[string]any{"profile": "coder"},
+		RuntimeOptions:  map[string]any{"executor": "coder"},
 		Status:          atypes.TaskStatusCreated,
 		CreatedAt:       time.Now().UTC(),
 		UpdatedAt:       time.Now().UTC(),
@@ -80,11 +80,11 @@ func TestSQLiteStorePersistsSessionBinding(t *testing.T) {
 	ctx := context.Background()
 	binding := atypes.SessionBinding{
 		RuntimeID:       "hermes",
-		SubcontextKey:   "profile:coder",
+		SubcontextKey:   "executor:coder",
 		StickyKey:       "conversation:abc",
 		Adapter:         "hermes",
 		RemoteSessionID: "sess-1",
-		Metadata:        map[string]any{"profile": "coder"},
+		Metadata:        map[string]any{"executor": "coder"},
 		CreatedAt:       time.Now().UTC(),
 		UpdatedAt:       time.Now().UTC(),
 		LastUsedAt:      time.Now().UTC(),
@@ -93,14 +93,74 @@ func TestSQLiteStorePersistsSessionBinding(t *testing.T) {
 	if err := store.UpsertSessionBinding(ctx, binding); err != nil {
 		t.Fatalf("upsert session binding: %v", err)
 	}
-	loaded, err := store.GetSessionBinding(ctx, "hermes", "profile:coder", "conversation:abc")
+	loaded, err := store.GetSessionBinding(ctx, "hermes", "executor:coder", "conversation:abc")
 	if err != nil {
 		t.Fatalf("get session binding: %v", err)
 	}
 	if loaded.RemoteSessionID != "sess-1" {
 		t.Fatalf("expected sess-1, got %q", loaded.RemoteSessionID)
 	}
-	if err := store.TouchSessionBindingActivity(ctx, "hermes", "profile:coder", "conversation:abc", time.Now().UTC().Add(1*time.Minute)); err != nil {
+	if err := store.TouchSessionBindingActivity(ctx, "hermes", "executor:coder", "conversation:abc", time.Now().UTC().Add(1*time.Minute)); err != nil {
 		t.Fatalf("touch session binding activity: %v", err)
+	}
+}
+
+func TestSQLiteStoreAppendEventAndUpdateTaskMutatesTogether(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	task := atypes.TaskRecord{
+		TaskID:          atypes.NewID(),
+		ConversationID:  atypes.NewID(),
+		Sender:          "local",
+		Intent:          "code.patch",
+		ResolvedRuntime: "hermes",
+		RuntimeOptions:  map[string]any{"executor": "coder"},
+		Status:          atypes.TaskStatusLaunching,
+		CreatedAt:       time.Now().UTC(),
+		UpdatedAt:       time.Now().UTC(),
+	}
+	if err := store.InsertTask(ctx, task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	event := atypes.TaskEvent{
+		EventID:   atypes.NewID(),
+		TaskID:    task.TaskID,
+		Seq:       1,
+		Kind:      atypes.TaskEventTaskFailed,
+		State:     atypes.TaskStatusFailed,
+		Source:    atypes.EventSourceRuntime,
+		Message:   "launch_failed",
+		Data:      map[string]any{"detail": "boom"},
+		CreatedAt: time.Now().UTC(),
+	}
+	taskErr := &atypes.TaskError{Reason: "launch_failed", Detail: "boom"}
+	if err := store.AppendEventAndUpdateTask(ctx, event, nil, taskErr, ""); err != nil {
+		t.Fatalf("append event and update task: %v", err)
+	}
+
+	loaded, err := store.GetTask(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if loaded.Status != atypes.TaskStatusFailed {
+		t.Fatalf("expected failed task status, got %q", loaded.Status)
+	}
+	if loaded.LastError == nil || loaded.LastError.Reason != "launch_failed" {
+		t.Fatalf("expected persisted last_error, got %#v", loaded.LastError)
+	}
+
+	events, err := store.ListEvents(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 || events[0].State != atypes.TaskStatusFailed {
+		t.Fatalf("expected one failed event, got %#v", events)
 	}
 }

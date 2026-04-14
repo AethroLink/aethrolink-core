@@ -19,8 +19,8 @@ Use these identifier formats in v0.1:
 Examples:
 
 - `01JY0R4R2V2QKBR8Q2YQ9BMS1V`
-- `hermes`
-- `researcher_http`
+- `core`
+- `research`
 
 ## 2. Canonical Enums
 
@@ -80,14 +80,14 @@ These types must exist in code.
 ```json
 {
   "sender": "local",
-  "target_runtime": "hermes",
+  "target_runtime": "core",
   "intent": "code.patch",
   "payload": {
     "repo": "/workspace/app",
     "issue": "Fix billing test failures"
   },
   "runtime_options": {
-    "profile": "coder"
+    "executor": "coder"
   },
   "conversation_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1V",
   "delivery": {
@@ -137,14 +137,14 @@ Rules:
   "task_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1V",
   "conversation_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1W",
   "sender": "local",
-  "target_runtime": "hermes",
+  "target_runtime": "core",
   "intent": "code.patch",
   "payload": {
     "repo": "/workspace/app",
     "issue": "Fix billing test failures"
   },
   "runtime_options": {
-    "profile": "coder"
+    "executor": "coder"
   },
   "delivery": {
     "mode": "stream",
@@ -167,10 +167,10 @@ Rules:
 {
   "lease_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1Y",
   "runtime_id": "hermes",
-  "subcontext_key": "profile:coder",
+  "subcontext_key": "executor:coder",
   "process_id": "12345",
   "metadata": {
-    "profile": "coder"
+    "executor": "coder"
   },
   "created_at": "2026-04-11T10:00:00Z",
   "released_at": null
@@ -180,7 +180,7 @@ Rules:
 Rules:
 
 - `subcontext_key` is adapter-private but persisted
-- for Hermes it is typically `profile:<name>`
+- for Hermes it is typically `executor:<name>`
 - for OpenClaw it is typically `session:<key>`
 - `process_id` may be null for remote-only runtimes
 
@@ -214,10 +214,10 @@ Rules:
   "conversation_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1W",
   "sender": "local",
   "intent": "code.patch",
-  "requested_runtime": "hermes",
-  "resolved_runtime": "hermes",
+  "requested_runtime": "core",
+  "resolved_runtime": "core",
   "runtime_options": {
-    "profile": "coder"
+    "executor": "coder"
   },
   "status": "running",
   "remote": {
@@ -310,10 +310,10 @@ Status: `202 Accepted`
     "conversation_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1W",
     "sender": "local",
     "intent": "code.patch",
-    "requested_runtime": "hermes",
-    "resolved_runtime": "hermes",
+    "requested_runtime": "core",
+    "resolved_runtime": "core",
     "runtime_options": {
-      "profile": "coder"
+      "executor": "coder"
     },
     "status": "created",
     "remote": null,
@@ -351,10 +351,10 @@ Status: `200 OK`
   "conversation_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1W",
   "sender": "local",
   "intent": "code.patch",
-  "requested_runtime": "hermes",
-  "resolved_runtime": "hermes",
+  "requested_runtime": "core",
+  "resolved_runtime": "core",
   "runtime_options": {
-    "profile": "coder"
+    "executor": "coder"
   },
   "status": "running",
   "remote": {
@@ -477,7 +477,7 @@ Status: `200 OK`
       "adapter": "hermes",
       "capabilities": ["code.patch", "code.review", "research.topic"],
       "defaults": {
-        "profile": "coder"
+        "executor": "coder"
       }
     }
   ]
@@ -512,7 +512,7 @@ Start or warm a runtime.
 ```json
 {
   "runtime_options": {
-    "profile": "coder"
+    "executor": "coder"
   }
 }
 ```
@@ -538,7 +538,7 @@ Stop or release a runtime context.
 ```json
 {
   "runtime_options": {
-    "profile": "coder"
+    "executor": "coder"
   }
 }
 ```
