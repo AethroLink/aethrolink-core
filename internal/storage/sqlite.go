@@ -80,6 +80,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	stmts := []string{
 		`PRAGMA journal_mode=WAL;`,
 		`PRAGMA busy_timeout=5000;`,
+		`CREATE TABLE IF NOT EXISTS agents (agent_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, runtime_kind TEXT NOT NULL, transport_kind TEXT NOT NULL, endpoint TEXT, runtime_id TEXT, adapter_kind TEXT, dialect TEXT, healthcheck TEXT, launch_json TEXT NOT NULL, defaults_json TEXT NOT NULL, capabilities_json TEXT NOT NULL, sticky_mode TEXT, metadata_json TEXT NOT NULL, status TEXT NOT NULL, registered_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, lease_expires_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_agents_status_lease ON agents(status, lease_expires_at)`,
 		`CREATE TABLE IF NOT EXISTS runtimes (runtime_id TEXT PRIMARY KEY, adapter_kind TEXT NOT NULL, spec_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runtime_leases (lease_id TEXT PRIMARY KEY, runtime_id TEXT NOT NULL, subcontext_key TEXT, process_id TEXT, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, released_at TEXT)`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_leases_runtime_subcontext_released ON runtime_leases(runtime_id, subcontext_key, released_at)`,
@@ -118,6 +120,106 @@ func (s *SQLiteStore) UpsertRuntime(ctx context.Context, spec atypes.RuntimeSpec
 	`, spec.RuntimeID, spec.Adapter, string(specJSON), now, now)
 	if err != nil {
 		return fmt.Errorf("upsert runtime: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) UpsertAgent(ctx context.Context, agent atypes.AgentRecord) error {
+	launchJSON, err := json.Marshal(agent.Launch)
+	if err != nil {
+		return fmt.Errorf("marshal agent launch: %w", err)
+	}
+	defaultsJSON, err := json.Marshal(agent.Defaults)
+	if err != nil {
+		return fmt.Errorf("marshal agent defaults: %w", err)
+	}
+	capabilitiesJSON, err := json.Marshal(agent.Capabilities)
+	if err != nil {
+		return fmt.Errorf("marshal agent capabilities: %w", err)
+	}
+	metadataJSON, err := json.Marshal(agent.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal agent metadata: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO agents(agent_id, display_name, runtime_kind, transport_kind, endpoint, runtime_id, adapter_kind, dialect, healthcheck, launch_json, defaults_json, capabilities_json, sticky_mode, metadata_json, status, registered_at, updated_at, last_seen_at, lease_expires_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(agent_id) DO UPDATE SET
+			display_name = excluded.display_name,
+			runtime_kind = excluded.runtime_kind,
+			transport_kind = excluded.transport_kind,
+			endpoint = excluded.endpoint,
+			runtime_id = excluded.runtime_id,
+			adapter_kind = excluded.adapter_kind,
+			dialect = excluded.dialect,
+			healthcheck = excluded.healthcheck,
+			launch_json = excluded.launch_json,
+			defaults_json = excluded.defaults_json,
+			capabilities_json = excluded.capabilities_json,
+			sticky_mode = excluded.sticky_mode,
+			metadata_json = excluded.metadata_json,
+			status = excluded.status,
+			updated_at = excluded.updated_at,
+			last_seen_at = excluded.last_seen_at,
+			lease_expires_at = excluded.lease_expires_at
+	`, agent.AgentID, agent.DisplayName, agent.RuntimeKind, agent.TransportKind, nullString(agent.Endpoint), nullString(agent.RuntimeID), nullString(agent.Adapter), nullString(agent.Dialect), nullString(agent.Healthcheck), string(launchJSON), string(defaultsJSON), string(capabilitiesJSON), nullString(agent.StickyMode), string(metadataJSON), string(agent.Status), agent.RegisteredAt.Format(time.RFC3339Nano), agent.UpdatedAt.Format(time.RFC3339Nano), agent.LastSeenAt.Format(time.RFC3339Nano), agent.LeaseExpiresAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("upsert agent: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) GetAgent(ctx context.Context, agentID string) (atypes.AgentRecord, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT agent_id, display_name, runtime_kind, transport_kind, endpoint, runtime_id, adapter_kind, dialect, healthcheck, launch_json, defaults_json, capabilities_json, sticky_mode, metadata_json, status, registered_at, updated_at, last_seen_at, lease_expires_at
+		FROM agents WHERE agent_id = ?
+	`, agentID)
+	return scanAgent(row)
+}
+
+func (s *SQLiteStore) ListAgents(ctx context.Context) ([]atypes.AgentRecord, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT agent_id, display_name, runtime_kind, transport_kind, endpoint, runtime_id, adapter_kind, dialect, healthcheck, launch_json, defaults_json, capabilities_json, sticky_mode, metadata_json, status, registered_at, updated_at, last_seen_at, lease_expires_at
+		FROM agents ORDER BY display_name ASC, agent_id ASC
+	`)
+	if err != nil {
+		return nil, fmt.Errorf("list agents: %w", err)
+	}
+	defer rows.Close()
+	var agents []atypes.AgentRecord
+	for rows.Next() {
+		agent, err := scanAgent(rows)
+		if err != nil {
+			return nil, err
+		}
+		agents = append(agents, agent)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate agents: %w", err)
+	}
+	return agents, nil
+}
+
+func (s *SQLiteStore) TouchAgentLease(ctx context.Context, agentID string, lastSeenAt, leaseExpiresAt time.Time) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agents
+		SET status = ?, updated_at = ?, last_seen_at = ?, lease_expires_at = ?
+		WHERE agent_id = ?
+	`, string(atypes.AgentStatusOnline), lastSeenAt.Format(time.RFC3339Nano), lastSeenAt.Format(time.RFC3339Nano), leaseExpiresAt.Format(time.RFC3339Nano), agentID)
+	if err != nil {
+		return fmt.Errorf("touch agent lease: %w", err)
+	}
+	return nil
+}
+
+func (s *SQLiteStore) MarkAgentOffline(ctx context.Context, agentID string) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE agents
+		SET status = ?, updated_at = ?, lease_expires_at = ?
+		WHERE agent_id = ?
+	`, string(atypes.AgentStatusOffline), atypes.NowUTC().Format(time.RFC3339Nano), atypes.NowUTC().Format(time.RFC3339Nano), agentID)
+	if err != nil {
+		return fmt.Errorf("mark agent offline: %w", err)
 	}
 	return nil
 }
@@ -545,6 +647,63 @@ func scanSessionBinding(scanner interface{ Scan(dest ...any) error }) (atypes.Se
 		return atypes.SessionBinding{}, fmt.Errorf("parse session binding last_activity_at: %w", err)
 	}
 	return binding, nil
+}
+
+func scanAgent(scanner interface{ Scan(dest ...any) error }) (atypes.AgentRecord, error) {
+	var (
+		agent            atypes.AgentRecord
+		endpoint         sql.NullString
+		runtimeID        sql.NullString
+		adapterKind      sql.NullString
+		dialect          sql.NullString
+		healthcheck      sql.NullString
+		launchJSON       string
+		defaultsJSON     string
+		capabilitiesJSON string
+		stickyMode       sql.NullString
+		metadataJSON     string
+		status           string
+		registeredAt     string
+		updatedAt        string
+		lastSeenAt       string
+		leaseExpiresAt   string
+	)
+	if err := scanner.Scan(&agent.AgentID, &agent.DisplayName, &agent.RuntimeKind, &agent.TransportKind, &endpoint, &runtimeID, &adapterKind, &dialect, &healthcheck, &launchJSON, &defaultsJSON, &capabilitiesJSON, &stickyMode, &metadataJSON, &status, &registeredAt, &updatedAt, &lastSeenAt, &leaseExpiresAt); err != nil {
+		return atypes.AgentRecord{}, err
+	}
+	agent.Endpoint = endpoint.String
+	agent.RuntimeID = runtimeID.String
+	agent.Adapter = adapterKind.String
+	agent.Dialect = dialect.String
+	agent.Healthcheck = healthcheck.String
+	agent.StickyMode = stickyMode.String
+	agent.Status = atypes.AgentStatus(status)
+	if err := json.Unmarshal([]byte(launchJSON), &agent.Launch); err != nil {
+		return atypes.AgentRecord{}, fmt.Errorf("unmarshal agent launch: %w", err)
+	}
+	if err := json.Unmarshal([]byte(defaultsJSON), &agent.Defaults); err != nil {
+		return atypes.AgentRecord{}, fmt.Errorf("unmarshal agent defaults: %w", err)
+	}
+	if err := json.Unmarshal([]byte(capabilitiesJSON), &agent.Capabilities); err != nil {
+		return atypes.AgentRecord{}, fmt.Errorf("unmarshal agent capabilities: %w", err)
+	}
+	if err := json.Unmarshal([]byte(metadataJSON), &agent.Metadata); err != nil {
+		return atypes.AgentRecord{}, fmt.Errorf("unmarshal agent metadata: %w", err)
+	}
+	var err error
+	if agent.RegisteredAt, err = time.Parse(time.RFC3339Nano, registeredAt); err != nil {
+		return atypes.AgentRecord{}, fmt.Errorf("parse registered_at: %w", err)
+	}
+	if agent.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return atypes.AgentRecord{}, fmt.Errorf("parse updated_at: %w", err)
+	}
+	if agent.LastSeenAt, err = time.Parse(time.RFC3339Nano, lastSeenAt); err != nil {
+		return atypes.AgentRecord{}, fmt.Errorf("parse last_seen_at: %w", err)
+	}
+	if agent.LeaseExpiresAt, err = time.Parse(time.RFC3339Nano, leaseExpiresAt); err != nil {
+		return atypes.AgentRecord{}, fmt.Errorf("parse lease_expires_at: %w", err)
+	}
+	return agent, nil
 }
 
 func nullString(value string) any {

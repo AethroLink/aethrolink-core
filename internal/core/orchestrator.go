@@ -8,7 +8,6 @@ import (
 	"sync"
 
 	"github.com/aethrolink/aethrolink-core/internal/adapters"
-	"github.com/aethrolink/aethrolink-core/internal/config"
 	"github.com/aethrolink/aethrolink-core/internal/runtime"
 	"github.com/aethrolink/aethrolink-core/internal/storage"
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
@@ -29,7 +28,7 @@ type subscriber struct {
 }
 
 type Orchestrator struct {
-	registry         *config.RegistryDiscovery
+	discovery        atypes.DiscoveryProvider
 	store            *storage.SQLiteStore
 	runtime          *runtime.Manager
 	adapters         *adapters.Registry
@@ -38,21 +37,8 @@ type Orchestrator struct {
 	nextSubscriberID int
 }
 
-func NewOrchestrator(registry *config.RegistryDiscovery, store *storage.SQLiteStore, runtimeManager *runtime.Manager, adapterRegistry *adapters.Registry) *Orchestrator {
-	return &Orchestrator{registry: registry, store: store, runtime: runtimeManager, adapters: adapterRegistry, subscribers: map[int]subscriber{}}
-}
-
-func (o *Orchestrator) PreloadRegistry(ctx context.Context) error {
-	runtimes, err := o.registry.ListRuntimes(ctx)
-	if err != nil {
-		return err
-	}
-	for _, runtimeSpec := range runtimes {
-		if err := o.store.UpsertRuntime(ctx, runtimeSpec); err != nil {
-			return err
-		}
-	}
-	return nil
+func NewOrchestrator(discovery atypes.DiscoveryProvider, store *storage.SQLiteStore, runtimeManager *runtime.Manager, adapterRegistry *adapters.Registry) *Orchestrator {
+	return &Orchestrator{discovery: discovery, store: store, runtime: runtimeManager, adapters: adapterRegistry, subscribers: map[int]subscriber{}}
 }
 
 func mergeMaps(base, override map[string]any) map[string]any {
@@ -93,7 +79,7 @@ func (o *Orchestrator) routeRequest(ctx context.Context, req atypes.TaskCreateRe
 		return "", nil, err
 	}
 	if req.TargetRuntime != "" {
-		spec, err := o.registry.ResolveRuntime(ctx, req.TargetRuntime)
+		spec, err := o.discovery.ResolveRuntime(ctx, req.TargetRuntime)
 		if err != nil {
 			return "", nil, ErrRuntimeNotFound
 		}
@@ -102,14 +88,7 @@ func (o *Orchestrator) routeRequest(ctx context.Context, req atypes.TaskCreateRe
 		}
 		return req.TargetRuntime, mergeMaps(spec.Defaults, req.RuntimeOptions), nil
 	}
-	if route, ok := o.registry.RouteForIntent(req.Intent); ok {
-		spec, err := o.registry.ResolveRuntime(ctx, route.Runtime)
-		if err != nil {
-			return "", nil, ErrRuntimeNotFound
-		}
-		return route.Runtime, mergeMaps(spec.Defaults, mergeMaps(route.RuntimeOptions, req.RuntimeOptions)), nil
-	}
-	runtimes, err := o.registry.ListRuntimes(ctx)
+	runtimes, err := o.discovery.ListRuntimes(ctx)
 	if err != nil {
 		return "", nil, err
 	}
@@ -195,7 +174,7 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 // rehydrateRemoteHandle asks the adapter to rebuild any adapter-private
 // handle state from the persisted task record.
 func (o *Orchestrator) rehydrateRemoteHandle(task atypes.TaskRecord) atypes.RemoteHandle {
-	spec, err := o.registry.ResolveRuntime(context.Background(), task.ResolvedRuntime)
+	spec, err := o.discovery.ResolveRuntime(context.Background(), task.ResolvedRuntime)
 	if err != nil {
 		return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
 	}
@@ -218,7 +197,7 @@ func (o *Orchestrator) runTask(taskID string, delivery atypes.DeliveryPolicy, pa
 	if err != nil {
 		return
 	}
-	spec, err := o.registry.ResolveRuntime(ctx, task.ResolvedRuntime)
+	spec, err := o.discovery.ResolveRuntime(ctx, task.ResolvedRuntime)
 	if err != nil {
 		return
 	}
@@ -340,7 +319,7 @@ func (o *Orchestrator) ResumeTask(ctx context.Context, taskID string, payload ma
 	if task.Status != atypes.TaskStatusAwaitingInput {
 		return atypes.TaskRecord{}, ErrTaskNotAwaitable
 	}
-	spec, err := o.registry.ResolveRuntime(ctx, task.ResolvedRuntime)
+	spec, err := o.discovery.ResolveRuntime(ctx, task.ResolvedRuntime)
 	if err != nil {
 		return atypes.TaskRecord{}, ErrRuntimeNotFound
 	}
@@ -364,7 +343,7 @@ func (o *Orchestrator) CancelTask(ctx context.Context, taskID, reason string) (a
 	if task.Status.IsTerminal() {
 		return task, nil
 	}
-	spec, err := o.registry.ResolveRuntime(ctx, task.ResolvedRuntime)
+	spec, err := o.discovery.ResolveRuntime(ctx, task.ResolvedRuntime)
 	if err != nil {
 		return atypes.TaskRecord{}, ErrRuntimeNotFound
 	}
@@ -385,11 +364,11 @@ func (o *Orchestrator) CancelTask(ctx context.Context, taskID, reason string) (a
 }
 
 func (o *Orchestrator) ListRuntimes(ctx context.Context) ([]atypes.RuntimeSpec, error) {
-	return o.registry.ListRuntimes(ctx)
+	return o.discovery.ListRuntimes(ctx)
 }
 
 func (o *Orchestrator) RuntimeHealth(ctx context.Context, runtimeID string) (map[string]any, error) {
-	spec, err := o.registry.ResolveRuntime(ctx, runtimeID)
+	spec, err := o.discovery.ResolveRuntime(ctx, runtimeID)
 	if err != nil {
 		return nil, ErrRuntimeNotFound
 	}
@@ -401,7 +380,7 @@ func (o *Orchestrator) RuntimeHealth(ctx context.Context, runtimeID string) (map
 }
 
 func (o *Orchestrator) StartRuntime(ctx context.Context, runtimeID string, runtimeOptions map[string]any) (map[string]any, error) {
-	spec, err := o.registry.ResolveRuntime(ctx, runtimeID)
+	spec, err := o.discovery.ResolveRuntime(ctx, runtimeID)
 	if err != nil {
 		return nil, ErrRuntimeNotFound
 	}
@@ -417,7 +396,7 @@ func (o *Orchestrator) StartRuntime(ctx context.Context, runtimeID string, runti
 }
 
 func (o *Orchestrator) StopRuntime(ctx context.Context, runtimeID string, runtimeOptions map[string]any) (map[string]any, error) {
-	spec, err := o.registry.ResolveRuntime(ctx, runtimeID)
+	spec, err := o.discovery.ResolveRuntime(ctx, runtimeID)
 	if err != nil {
 		return nil, ErrRuntimeNotFound
 	}

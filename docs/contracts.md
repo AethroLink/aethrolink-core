@@ -269,6 +269,83 @@ Rules:
 }
 ```
 
+### 3.9 AgentRegistrationRequest
+
+```json
+{
+  "agent_id": "01JY0R4R2V2QKBR8Q2YQ9BMS20",
+  "display_name": "hermes-dev",
+  "runtime_kind": "hermes",
+  "transport_kind": "local_managed",
+  "endpoint": "",
+  "runtime_id": "core",
+  "capabilities": ["agent.runtime", "code.patch"],
+  "sticky_mode": "conversation",
+  "metadata": {
+    "profile": "aethrolink-agent"
+  },
+  "lease_ttl_seconds": 300
+}
+```
+
+Rules:
+
+- `display_name` is required
+- `runtime_kind` is required
+- `transport_kind` is required
+- `agent_id` is optional and generated if omitted
+- `capabilities` defaults to `[]`
+- `metadata` defaults to `{}`
+- `lease_ttl_seconds` defaults to `300`
+
+### 3.10 AgentRecord
+
+```json
+{
+  "agent_id": "01JY0R4R2V2QKBR8Q2YQ9BMS20",
+  "display_name": "hermes-dev",
+  "runtime_kind": "hermes",
+  "transport_kind": "local_managed",
+  "endpoint": "",
+  "runtime_id": "core",
+  "capabilities": ["agent.runtime", "code.patch"],
+  "sticky_mode": "conversation",
+  "metadata": {
+    "profile": "aethrolink-agent"
+  },
+  "status": "online",
+  "registered_at": "2026-04-14T10:00:00Z",
+  "updated_at": "2026-04-14T10:00:00Z",
+  "last_seen_at": "2026-04-14T10:00:00Z",
+  "lease_expires_at": "2026-04-14T10:05:00Z"
+}
+```
+
+Rules:
+
+- `status` is `online` or `offline`
+- effective online/offline state is determined by lease expiry
+- registration updates the agent row in place by `agent_id`
+- heartbeat extends `lease_expires_at`
+
+## 4. Agent Control Plane
+
+Registration endpoints:
+
+- `POST /v1/agents/register`
+- `POST /v1/agents/{agent_id}/heartbeat`
+- `GET /v1/agents`
+- `GET /v1/agents/{agent_id}`
+- `POST /v1/agents/{agent_id}/unregister`
+
+Invocation remains on the existing task endpoints:
+
+- `POST /v1/tasks`
+- `GET /v1/tasks/{task_id}`
+- `GET /v1/tasks/{task_id}/events`
+- `POST /v1/tasks/{task_id}/resume`
+- `POST /v1/tasks/{task_id}/cancel`
+
 ### 3.9 NetworkEnvelope
 
 This type is internal in v0.1 but must exist now for future transport support.

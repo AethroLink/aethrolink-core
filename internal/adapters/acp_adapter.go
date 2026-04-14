@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/aethrolink/aethrolink-core/internal/adaptersupport"
-	"github.com/aethrolink/aethrolink-core/internal/config"
 	"github.com/aethrolink/aethrolink-core/internal/runtime"
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
@@ -21,7 +20,7 @@ type acpRun struct {
 // a local runtime host, ACP session transport, sticky-session store, and
 // runtime-specific dialects.
 type ACPAdapter struct {
-	registry  *config.RegistryDiscovery
+	discovery atypes.DiscoveryProvider
 	host      atypes.LocalRuntimeHost
 	transport atypes.LocalSessionTransport
 	runtime   *runtime.Manager
@@ -31,9 +30,9 @@ type ACPAdapter struct {
 	runs      map[string]*acpRun
 }
 
-func NewACPAdapter(registry *config.RegistryDiscovery, runtimeManager *runtime.Manager) *ACPAdapter {
+func NewACPAdapter(discovery atypes.DiscoveryProvider, runtimeManager *runtime.Manager) *ACPAdapter {
 	return &ACPAdapter{
-		registry:  registry,
+		discovery: discovery,
 		host:      newACPRuntimeHost(runtimeManager),
 		transport: newACPSessionTransport(runtimeManager),
 		runtime:   runtimeManager,
@@ -50,7 +49,7 @@ func (a *ACPAdapter) Capabilities(context.Context) (map[string]any, error) {
 }
 
 func (a *ACPAdapter) EnsureReady(ctx context.Context, runtimeID string, options map[string]any) (atypes.RuntimeLease, error) {
-	spec, err := a.registry.ResolveRuntime(ctx, runtimeID)
+	spec, err := a.discovery.ResolveRuntime(ctx, runtimeID)
 	if err != nil {
 		return atypes.RuntimeLease{}, err
 	}
@@ -69,7 +68,7 @@ func (a *ACPAdapter) EnsureReady(ctx context.Context, runtimeID string, options 
 }
 
 func (a *ACPAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
-	spec, err := a.registry.ResolveRuntime(ctx, task.TargetRuntime)
+	spec, err := a.discovery.ResolveRuntime(ctx, task.TargetRuntime)
 	if err != nil {
 		return atypes.RemoteHandle{}, err
 	}
@@ -305,7 +304,7 @@ func (a *ACPAdapter) Cancel(ctx context.Context, handle atypes.RemoteHandle) err
 }
 
 func (a *ACPAdapter) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
-	spec, err := a.registry.ResolveRuntime(ctx, runtimeID)
+	spec, err := a.discovery.ResolveRuntime(ctx, runtimeID)
 	if err != nil {
 		return nil, err
 	}

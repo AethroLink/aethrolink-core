@@ -164,3 +164,67 @@ func TestSQLiteStoreAppendEventAndUpdateTaskMutatesTogether(t *testing.T) {
 		t.Fatalf("expected one failed event, got %#v", events)
 	}
 }
+
+func TestSQLiteStorePersistsAgentsAndHeartbeats(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	agent := atypes.AgentRecord{
+		AgentID:        atypes.NewID(),
+		DisplayName:    "hermes-dev",
+		RuntimeKind:    "hermes",
+		TransportKind:  "local_managed",
+		RuntimeID:      "core",
+		Capabilities:   []string{"agent.runtime", "code.patch"},
+		StickyMode:     "conversation",
+		Metadata:       map[string]any{"profile": "aethrolink-agent"},
+		Status:         atypes.AgentStatusOnline,
+		RegisteredAt:   now,
+		UpdatedAt:      now,
+		LastSeenAt:     now,
+		LeaseExpiresAt: now.Add(5 * time.Minute),
+	}
+	if err := store.UpsertAgent(ctx, agent); err != nil {
+		t.Fatalf("upsert agent: %v", err)
+	}
+
+	loaded, err := store.GetAgent(ctx, agent.AgentID)
+	if err != nil {
+		t.Fatalf("get agent: %v", err)
+	}
+	if loaded.DisplayName != agent.DisplayName {
+		t.Fatalf("expected display name %q, got %q", agent.DisplayName, loaded.DisplayName)
+	}
+	if len(loaded.Capabilities) != 2 {
+		t.Fatalf("expected capabilities to persist, got %#v", loaded.Capabilities)
+	}
+
+	heartbeatAt := now.Add(2 * time.Minute)
+	if err := store.TouchAgentLease(ctx, agent.AgentID, heartbeatAt, heartbeatAt.Add(5*time.Minute)); err != nil {
+		t.Fatalf("touch agent lease: %v", err)
+	}
+	loaded, err = store.GetAgent(ctx, agent.AgentID)
+	if err != nil {
+		t.Fatalf("get agent after heartbeat: %v", err)
+	}
+	if loaded.LastSeenAt.Before(heartbeatAt) {
+		t.Fatalf("expected last seen at to advance, got %s", loaded.LastSeenAt)
+	}
+
+	if err := store.MarkAgentOffline(ctx, agent.AgentID); err != nil {
+		t.Fatalf("mark agent offline: %v", err)
+	}
+	loaded, err = store.GetAgent(ctx, agent.AgentID)
+	if err != nil {
+		t.Fatalf("get agent after offline: %v", err)
+	}
+	if loaded.Status != atypes.AgentStatusOffline {
+		t.Fatalf("expected offline status, got %q", loaded.Status)
+	}
+}
