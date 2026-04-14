@@ -10,18 +10,20 @@ import (
 	"github.com/aethrolink/aethrolink-core/internal/config"
 	"github.com/aethrolink/aethrolink-core/internal/runtime"
 	"github.com/aethrolink/aethrolink-core/internal/storage"
+	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
 
 func TestHermesRecoverFinalTextReturnsEmptyWhenWorkerMissing(t *testing.T) {
 	adapter := newHermesAdapterForRecoveryTest(t)
-	if got := adapter.recoverFinalText(context.Background(), "hermes_test", "mimoportal", "sess-missing"); got != "" {
+	dialect := adapter.dialects["hermes"]
+	if got := adapter.recoverFinalText(context.Background(), "hermes_test", "executor:mimoportal", "sess-missing", atypes.WorkspaceBinding{CWD: "."}, map[string]any{"executor": "mimoportal"}, dialect); got != "" {
 		t.Fatalf("expected empty text without worker, got %q", got)
 	}
 }
 
 func TestHermesRecoverFinalTextUsesSessionLoadReplay(t *testing.T) {
 	adapter := newHermesAdapterForRecoveryTest(t)
-	lease, err := adapter.EnsureReady(context.Background(), "hermes_test", map[string]any{"profile": "mimoportal"})
+	lease, err := adapter.EnsureReady(context.Background(), "hermes_test", map[string]any{"executor": "mimoportal"})
 	if err != nil {
 		t.Fatalf("ensure ready: %v", err)
 	}
@@ -44,16 +46,17 @@ func TestHermesRecoverFinalTextUsesSessionLoadReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("session/prompt: %v", err)
 	}
-	if got := adapter.recoverFinalText(context.Background(), "hermes_test", "mimoportal", sessionID); got != "RECOVERED" {
+	dialect := adapter.dialects["hermes"]
+	if got := adapter.recoverFinalText(context.Background(), "hermes_test", lease.SubcontextKey, sessionID, atypes.WorkspaceBinding{CWD: "."}, map[string]any{"executor": "mimoportal"}, dialect); got != "RECOVERED" {
 		t.Fatalf("expected recovered text, got %q", got)
 	}
 }
 
-func newHermesAdapterForRecoveryTest(t *testing.T) *HermesAdapter {
+func newHermesAdapterForRecoveryTest(t *testing.T) *ACPAdapter {
 	t.Helper()
 	root := filepath.Clean(filepath.Join("..", ".."))
 	registryPath := filepath.Join(t.TempDir(), "registry.yaml")
-	registryYAML := []byte("runtimes:\n  hermes_test:\n    adapter: hermes\n    launch:\n      mode: managed\n      commands:\n        mimoportal: [\"go\", \"run\", \"" + root + "/cmd/fake-acp-client-agent\"]\n    defaults:\n      profile: mimoportal\n    capabilities:\n      - research.topic\n")
+	registryYAML := []byte("runtimes:\n  hermes_test:\n    adapter: acp\n    dialect: hermes\n    launch:\n      mode: managed\n      command: [\"go\", \"run\", \"" + root + "/cmd/fake-acp-client-agent\"]\n    defaults:\n      executor: mimoportal\n    capabilities:\n      - research.topic\n")
 	if err := os.WriteFile(registryPath, registryYAML, 0o644); err != nil {
 		t.Fatalf("write registry: %v", err)
 	}
@@ -71,5 +74,5 @@ func newHermesAdapterForRecoveryTest(t *testing.T) *HermesAdapter {
 		_ = manager.StopAll(context.Background())
 		_ = store.Close()
 	})
-	return NewHermesAdapter(registry, manager)
+	return NewACPAdapter(registry, manager)
 }

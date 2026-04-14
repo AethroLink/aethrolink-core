@@ -312,7 +312,7 @@ Exit criteria:
 
 Add full integration tests covering:
 
-- Hermes profile selection via `runtime_options.profile`
+- Hermes executor selection via runtime defaults / `runtime_options.executor`
 - OpenClaw continuity via `runtime_options.session_key`
 - HTTP ACP run lifecycle
 - launch-if-down

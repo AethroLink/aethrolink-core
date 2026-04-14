@@ -81,15 +81,15 @@ The core may wrap these into API errors and `last_error.reason`.
 
 Public runtime id:
 
-- `hermes`
+- registry-defined semantic targets backed by Hermes, for example `core` or `research`
 
-Hermes profiles are **not** public runtime ids.
+Hermes executors are **not** public runtime ids.
 
 ## 3.1 Accepted runtime options
 
 ```json
 {
-  "profile": "coder",
+  "executor": "coder",
   "cwd": "/workspace/app",
   "workspace": "/workspace/app",
   "model": "default"
@@ -98,27 +98,27 @@ Hermes profiles are **not** public runtime ids.
 
 Rules:
 
-- `profile` default comes from registry
+- `executor` default comes from registry
 - `cwd` is optional
 - `workspace` is optional
 - unknown runtime options must be ignored unless they affect correctness
 
 ## 3.2 Lease model
 
-Hermes uses a sticky subprocess worker pool keyed by profile.
+Hermes uses a sticky subprocess worker pool keyed by executor.
 
 Required behavior:
 
-- `subcontext_key = "profile:<profile-name>"`
-- one live worker per profile is sufficient in v0.1
-- if an alive worker already exists for the profile, reuse it
-- if none exists, spawn using the registry command for that profile
+- `subcontext_key = "executor:<executor-name>"`
+- one live worker per executor is sufficient in v0.1
+- if an alive worker already exists for the executor, reuse it
+- if none exists, spawn using the registry command for that executor
 
 ## 3.3 Session model
 
 Keep this simple in v0.1:
 
-- worker continuity is sticky by profile
+- worker continuity is sticky by executor
 - prompt/session continuity is **best-effort**
 - adapter may create a fresh ACP client session per task by default
 - adapter may reuse a session if it already has one for the same worker and workspace
@@ -143,7 +143,7 @@ Recommended `RemoteHandle` fields:
   "remote_execution_id": "session_or_turn_id",
   "remote_session_id": "session_id",
   "adapter_state": {
-    "profile": "coder"
+    "executor": "coder"
   }
 }
 ```
@@ -167,7 +167,7 @@ If cancellation succeeds:
 
 Public runtime id:
 
-- `openclaw`
+- registry-defined semantic targets backed by OpenClaw, for example `gateway`
 
 Gateway session keys are **not** public runtime ids.
 

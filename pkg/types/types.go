@@ -280,6 +280,7 @@ type LaunchSpec struct {
 type RuntimeSpec struct {
 	RuntimeID    string         `json:"runtime_id" yaml:"-"`
 	Adapter      string         `json:"adapter" yaml:"adapter"`
+	Dialect      string         `json:"dialect,omitempty" yaml:"dialect,omitempty"`
 	Endpoint     string         `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
 	Healthcheck  string         `json:"healthcheck,omitempty" yaml:"healthcheck,omitempty"`
 	Launch       LaunchSpec     `json:"launch" yaml:"launch"`

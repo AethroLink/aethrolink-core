@@ -135,10 +135,7 @@ func (o *Orchestrator) appendEvent(ctx context.Context, taskID string, kind atyp
 		return atypes.TaskEvent{}, err
 	}
 	event := atypes.TaskEvent{EventID: atypes.NewID(), TaskID: taskID, Seq: seq, Kind: kind, State: state, Source: source, Message: message, Data: cloneMap(data), CreatedAt: atypes.NowUTC()}
-	if err := o.store.AppendEvent(ctx, event); err != nil {
-		return atypes.TaskEvent{}, err
-	}
-	if err := o.store.UpdateTaskState(ctx, taskID, state, remote, taskErr, resultArtifactID); err != nil {
+	if err := o.store.AppendEventAndUpdateTask(ctx, event, remote, taskErr, resultArtifactID); err != nil {
 		return atypes.TaskEvent{}, err
 	}
 	o.mu.RLock()

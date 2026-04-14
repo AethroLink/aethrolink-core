@@ -94,17 +94,18 @@ AethroLink exposes runtimes as execution targets.
 
 Examples:
 
-- `hermes`
-- `openclaw`
-- `researcher_http`
+- `core`
+- `research`
+- `gateway`
 
 AethroLink does not expose:
 
-- Hermes profiles as separate public runtime IDs
-- OpenClaw session keys as separate public runtime IDs
+- raw protocol endpoints as public runtime IDs
+- arbitrary per-request Hermes executor names outside registry-defined runtimes
+- arbitrary per-request OpenClaw session keys outside registry-defined runtimes
 - protocols as first-class public targets
 
-Profiles and session keys belong in `runtime_options`.
+Executors and session keys belong in `runtime_options`.
 
 ## Key architecture idea
 
@@ -121,12 +122,13 @@ Only the first slice is fully implemented in `v0.1`, but all boundaries should e
 ## Runtime adapters
 
 ### Hermes
-- Public runtime ID: `hermes`
-- `runtime_options.profile` selects the internal execution context
-- Hermes profiles are internal adapter-managed workers, not separate public targets
+- Runtime IDs should be stable semantic targets from registry, not Hermes-shaped names
+- Hermes executors remain adapter-private execution scopes behind those targets
+- `runtime_options.executor` may override the internal execution scope when needed
+- No legacy `runtime_options.profile` fallback remains
 
 ### OpenClaw
-- Public runtime ID: `openclaw`
+- OpenClaw-backed runtime IDs should also be semantic registry targets such as `gateway`
 - `runtime_options.session_key` selects the internal continuity context
 - Session keys are adapter-private, not public runtime IDs
 
@@ -176,14 +178,14 @@ aethrolink-core/
   pkg/
     types/
     contracts/
+  configs/
+    registry.yaml
   docs/
     overview.md
     contracts.md
     state_machine.md
     adapter_contracts.md
     implementation_plan.md
-  examples/
-    registry.yaml
   tests/
     integration/
 ```

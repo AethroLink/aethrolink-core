@@ -25,17 +25,18 @@ func setupRealAdapterServer(t *testing.T) (*httptest.Server, *core.Orchestrator)
 	registryPath := filepath.Join(t.TempDir(), "registry.yaml")
 	content := fmt.Sprintf(`runtimes:
   hermes_real_test:
-    adapter: hermes
+    adapter: acp
+    dialect: hermes
     launch:
       mode: managed
-      commands:
-        coder: ["go", "run", "%s/cmd/fake-acp-client-agent"]
+      command: ["go", "run", "%s/cmd/fake-acp-client-agent"]
     defaults:
-      profile: coder
+      executor: coder
     capabilities:
       - code.patch
   openclaw_real_test:
-    adapter: openclaw
+    adapter: acp
+    dialect: openclaw
     launch:
       mode: managed
       command: ["go", "run", "%s/cmd/fake-acp-client-agent"]
@@ -58,8 +59,7 @@ func setupRealAdapterServer(t *testing.T) (*httptest.Server, *core.Orchestrator)
 	}
 	runtimeManager := runtime.NewManager(store)
 	adapterRegistry := adapters.NewRegistry()
-	adapterRegistry.Register("hermes", adapters.NewHermesAdapter(registry, runtimeManager))
-	adapterRegistry.Register("openclaw", adapters.NewOpenClawAdapter(registry, runtimeManager))
+	adapterRegistry.Register("acp", adapters.NewACPAdapter(registry, runtimeManager))
 	orchestrator := core.NewOrchestrator(registry, store, runtimeManager, adapterRegistry)
 	if err := orchestrator.PreloadRegistry(context.Background()); err != nil {
 		t.Fatalf("preload registry: %v", err)
@@ -144,14 +144,14 @@ func nestedString(m map[string]any, keys ...string) string {
 
 func TestHermesStickySessionReusesConversationSession(t *testing.T) {
 	server, orchestrator := setupRealAdapterServer(t)
-	first := createTaskForTest(t, server.URL, `{"target_runtime":"hermes_real_test","intent":"code.patch","conversation_id":"conv-sticky-1","payload":{"text":"Say exactly ALPHA"},"runtime_options":{"profile":"coder"}}`)
+	first := createTaskForTest(t, server.URL, `{"target_runtime":"hermes_real_test","intent":"code.patch","conversation_id":"conv-sticky-1","payload":{"text":"Say exactly ALPHA"}}`)
 	firstTaskID := nestedString(first, "task", "task_id")
 	firstTask := waitForTaskStatus(t, server.URL, firstTaskID, "completed")
 	if got := readArtifactText(t, server.URL, firstTask); got != "ALPHA" {
 		t.Fatalf("expected ALPHA, got %q", got)
 	}
 
-	second := createTaskForTest(t, server.URL, `{"target_runtime":"hermes_real_test","intent":"code.patch","conversation_id":"conv-sticky-1","payload":{"text":"What did I ask you to say exactly in the previous turn?"},"runtime_options":{"profile":"coder"}}`)
+	second := createTaskForTest(t, server.URL, `{"target_runtime":"hermes_real_test","intent":"code.patch","conversation_id":"conv-sticky-1","payload":{"text":"What did I ask you to say exactly in the previous turn?"}}`)
 	secondTaskID := nestedString(second, "task", "task_id")
 	secondTask := waitForTaskStatus(t, server.URL, secondTaskID, "completed")
 	if got := readArtifactText(t, server.URL, secondTask); got != "ALPHA" {
