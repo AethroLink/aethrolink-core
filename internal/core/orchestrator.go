@@ -111,6 +111,31 @@ func (o *Orchestrator) getThreadRecord(ctx context.Context, threadID string) (at
 	return thread, nil
 }
 
+// deriveThreadContinuationPair fills omitted sender/target values from persisted
+// thread history so manual continuation can alternate cleanly by default.
+func deriveThreadContinuationPair(thread atypes.ThreadRecord, sender, target string) (string, string, error) {
+	if sender == "" {
+		switch {
+		case target == thread.AgentAID:
+			sender = thread.AgentBID
+		case target == thread.AgentBID:
+			sender = thread.AgentAID
+		case thread.LastTargetAgentID != "":
+			sender = thread.LastTargetAgentID
+		default:
+			sender = thread.AgentAID
+		}
+	}
+	if target == "" {
+		if sender == thread.AgentAID {
+			target = thread.AgentBID
+		} else {
+			target = thread.AgentAID
+		}
+	}
+	return validateThreadParticipants(thread, sender, target)
+}
+
 // appendTaskToThread records the created task as the next ordered thread turn.
 func (o *Orchestrator) appendTaskToThread(ctx context.Context, thread atypes.ThreadRecord, task atypes.TaskRecord) error {
 	now := atypes.NowUTC()
@@ -400,10 +425,18 @@ func (o *Orchestrator) ListThreadTurns(ctx context.Context, threadID string) ([]
 // ContinueThread creates the next thread-bound task under an existing pair boundary.
 func (o *Orchestrator) ContinueThread(ctx context.Context, threadID string, req atypes.ThreadContinueRequest) (atypes.TaskRecord, error) {
 	req.Normalize()
+	thread, err := o.getThreadRecord(ctx, threadID)
+	if err != nil {
+		return atypes.TaskRecord{}, err
+	}
+	sender, target, err := deriveThreadContinuationPair(thread, req.Sender, req.TargetAgentID)
+	if err != nil {
+		return atypes.TaskRecord{}, err
+	}
 	return o.CreateTask(ctx, atypes.TaskCreateRequest{
 		ThreadID:       threadID,
-		Sender:         req.Sender,
-		TargetAgentID:  req.TargetAgentID,
+		Sender:         sender,
+		TargetAgentID:  target,
 		Intent:         req.Intent,
 		Payload:        cloneMap(req.Payload),
 		RuntimeOptions: cloneMap(req.RuntimeOptions),

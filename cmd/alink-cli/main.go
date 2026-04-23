@@ -45,7 +45,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 func (c cli) run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: alink-cli <register|ensure-registered|heartbeat|call|task-get|task-events|agents|targets>")
+		return errors.New("usage: alink-cli <register|ensure-registered|heartbeat|call|task-get|task-events|thread-create|thread-get|thread-continue|thread-turns|agents|targets>")
 	}
 	switch args[0] {
 	case "register":
@@ -60,6 +60,14 @@ func (c cli) run(args []string) error {
 		return c.runTaskGet(args[1:])
 	case "task-events":
 		return c.runTaskEvents(args[1:])
+	case "thread-create":
+		return c.runThreadCreate(args[1:])
+	case "thread-get":
+		return c.runThreadGet(args[1:])
+	case "thread-continue":
+		return c.runThreadContinue(args[1:])
+	case "thread-turns":
+		return c.runThreadTurns(args[1:])
 	case "agents":
 		return c.runAgents(args[1:])
 	case "targets":
@@ -256,6 +264,83 @@ func (c cli) runTaskEvents(args []string) error {
 		return err
 	}
 	body, err := c.get(joinURL(*server, "/v1/tasks/"+*taskID+"/events"))
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(c.stdout, string(body))
+	return nil
+}
+
+func (c cli) runThreadCreate(args []string) error {
+	fs := flag.NewFlagSet("thread-create", flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	agentAID := fs.String("agent-a-id", "", "first thread agent id")
+	agentBID := fs.String("agent-b-id", "", "second thread agent id")
+	continuityKey := fs.String("continuity-key", "", "explicit continuity key")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	body, err := c.postJSON(joinURL(*server, "/v1/threads"), atypes.ThreadCreateRequest{AgentAID: *agentAID, AgentBID: *agentBID, ContinuityKey: *continuityKey})
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(c.stdout, string(body))
+	return nil
+}
+
+func (c cli) runThreadGet(args []string) error {
+	fs := flag.NewFlagSet("thread-get", flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	threadID := fs.String("thread-id", "", "thread id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	body, err := c.get(joinURL(*server, "/v1/threads/"+*threadID))
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(c.stdout, string(body))
+	return nil
+}
+
+func (c cli) runThreadContinue(args []string) error {
+	fs := flag.NewFlagSet("thread-continue", flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	threadID := fs.String("thread-id", "", "thread id")
+	sender := fs.String("sender", "", "explicit sender agent id")
+	targetAgentID := fs.String("target-agent-id", "", "explicit target agent id")
+	intent := fs.String("intent", "", "task intent")
+	text := fs.String("text", "", "text payload")
+	conversationID := fs.String("conversation-id", "", "conversation id override")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	body, err := c.postJSON(joinURL(*server, "/v1/threads/"+*threadID+"/continue"), atypes.ThreadContinueRequest{
+		Sender:         *sender,
+		TargetAgentID:  *targetAgentID,
+		Intent:         *intent,
+		Payload:        map[string]any{"text": *text},
+		ConversationID: *conversationID,
+	})
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(c.stdout, string(body))
+	return nil
+}
+
+func (c cli) runThreadTurns(args []string) error {
+	fs := flag.NewFlagSet("thread-turns", flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	threadID := fs.String("thread-id", "", "thread id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	body, err := c.get(joinURL(*server, "/v1/threads/"+*threadID+"/turns"))
 	if err != nil {
 		return err
 	}

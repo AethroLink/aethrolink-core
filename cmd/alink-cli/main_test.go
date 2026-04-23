@@ -108,6 +108,56 @@ func TestCallUsesStateAgentIDAsSender(t *testing.T) {
 	}
 }
 
+func TestThreadCommandsUseThreadEndpoints(t *testing.T) {
+	var createBody map[string]any
+	var continueBody map[string]any
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/threads":
+			if err := json.NewDecoder(r.Body).Decode(&createBody); err != nil {
+				t.Fatalf("decode thread create request: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"thread": map[string]any{"thread_id": "thread-123"}})
+		case "/v1/threads/thread-123/continue":
+			if err := json.NewDecoder(r.Body).Decode(&continueBody); err != nil {
+				t.Fatalf("decode thread continue request: %v", err)
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"task": map[string]any{"task_id": "task-123"}})
+		case "/v1/threads/thread-123/turns":
+			_ = json.NewEncoder(w).Encode(map[string]any{"turns": []map[string]any{{"turn_index": 1}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	if err := run([]string{"thread-create", "--server", server.URL, "--agent-a-id", "core", "--agent-b-id", "openclaw_main"}, &out, &errOut); err != nil {
+		t.Fatalf("run thread-create: %v", err)
+	}
+	if err := run([]string{"thread-continue", "--server", server.URL, "--thread-id", "thread-123", "--intent", "ui.review", "--text", "hello"}, &out, &errOut); err != nil {
+		t.Fatalf("run thread-continue: %v", err)
+	}
+	if err := run([]string{"thread-turns", "--server", server.URL, "--thread-id", "thread-123"}, &out, &errOut); err != nil {
+		t.Fatalf("run thread-turns: %v", err)
+	}
+	if createBody["agent_a_id"] != "core" || createBody["agent_b_id"] != "openclaw_main" {
+		t.Fatalf("expected thread-create body, got %#v", createBody)
+	}
+	if continueBody["intent"] != "ui.review" {
+		t.Fatalf("expected thread-continue intent, got %#v", continueBody)
+	}
+	continuePayload, _ := continueBody["payload"].(map[string]any)
+	if continuePayload["text"] != "hello" {
+		t.Fatalf("expected thread-continue payload text, got %#v", continuePayload)
+	}
+	if len(paths) != 3 || paths[0] != "/v1/threads" || paths[1] != "/v1/threads/thread-123/continue" || paths[2] != "/v1/threads/thread-123/turns" {
+		t.Fatalf("unexpected thread command paths: %#v", paths)
+	}
+}
+
 func TestEnsureRegisteredReusesExistingAgentState(t *testing.T) {
 	statePath := filepath.Join(t.TempDir(), "agent.json")
 	if err := saveAgentState(statePath, agentState{AgentID: "agent-123"}); err != nil {
