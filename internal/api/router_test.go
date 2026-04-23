@@ -305,3 +305,133 @@ func TestOfflineTargetStillAppearsInTargetsAndCanLaunchOnDemand(t *testing.T) {
 	}
 	_ = waitForStatus(t, server.URL, created.Task.TaskID, "completed")
 }
+
+func TestThreadCreateContinueAndListTurns(t *testing.T) {
+	server, orchestrator := setupServer(t)
+	defer func() { _ = orchestrator.StopAllRuntimeProcesses(context.Background()) }()
+
+	createResp, err := http.Post(server.URL+"/v1/threads", "application/json", strings.NewReader(`{"agent_a_id":"mock_hermes","agent_b_id":"mock_openclaw","metadata":{"purpose":"review-loop"}}`))
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusCreated {
+		var body map[string]any
+		_ = json.NewDecoder(createResp.Body).Decode(&body)
+		t.Fatalf("expected created thread response, got %d with body %#v", createResp.StatusCode, body)
+	}
+	var created struct {
+		Thread struct {
+			ThreadID string `json:"thread_id"`
+		} `json:"thread"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode thread create response: %v", err)
+	}
+	if created.Thread.ThreadID == "" {
+		t.Fatalf("expected thread id in create response")
+	}
+
+	firstContinueResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"sender":"mock_hermes","intent":"ui.review","payload":{"mode":"success"}}`))
+	if err != nil {
+		t.Fatalf("continue thread first turn: %v", err)
+	}
+	defer firstContinueResp.Body.Close()
+	var firstTask struct {
+		Task struct {
+			TaskID string `json:"task_id"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(firstContinueResp.Body).Decode(&firstTask); err != nil {
+		t.Fatalf("decode first continue response: %v", err)
+	}
+	if firstTask.Task.TaskID == "" {
+		t.Fatalf("expected first continue task id")
+	}
+	_ = waitForStatus(t, server.URL, firstTask.Task.TaskID, "completed")
+
+	secondContinueResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"sender":"mock_openclaw","intent":"code.patch","payload":{"mode":"success"}}`))
+	if err != nil {
+		t.Fatalf("continue thread second turn: %v", err)
+	}
+	defer secondContinueResp.Body.Close()
+	var secondTask struct {
+		Task struct {
+			TaskID string `json:"task_id"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(secondContinueResp.Body).Decode(&secondTask); err != nil {
+		t.Fatalf("decode second continue response: %v", err)
+	}
+	if secondTask.Task.TaskID == "" {
+		t.Fatalf("expected second continue task id")
+	}
+	_ = waitForStatus(t, server.URL, secondTask.Task.TaskID, "completed")
+
+	getThreadResp, err := http.Get(server.URL + "/v1/threads/" + created.Thread.ThreadID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	defer getThreadResp.Body.Close()
+	var loadedThread map[string]any
+	if err := json.NewDecoder(getThreadResp.Body).Decode(&loadedThread); err != nil {
+		t.Fatalf("decode thread get response: %v", err)
+	}
+	if loadedThread["last_actor_agent_id"] != "mock_openclaw" {
+		t.Fatalf("expected thread to remember last actor, got %#v", loadedThread["last_actor_agent_id"])
+	}
+	if loadedThread["last_target_agent_id"] != "mock_hermes" {
+		t.Fatalf("expected thread to remember last target, got %#v", loadedThread["last_target_agent_id"])
+	}
+
+	turnsResp, err := http.Get(server.URL + "/v1/threads/" + created.Thread.ThreadID + "/turns")
+	if err != nil {
+		t.Fatalf("list thread turns: %v", err)
+	}
+	defer turnsResp.Body.Close()
+	var turnsBody struct {
+		Turns []map[string]any `json:"turns"`
+	}
+	if err := json.NewDecoder(turnsResp.Body).Decode(&turnsBody); err != nil {
+		t.Fatalf("decode turns response: %v", err)
+	}
+	if len(turnsBody.Turns) != 2 {
+		t.Fatalf("expected 2 thread turns, got %d", len(turnsBody.Turns))
+	}
+	if turnsBody.Turns[0]["sender_agent_id"] != "mock_hermes" || turnsBody.Turns[0]["target_agent_id"] != "mock_openclaw" {
+		t.Fatalf("expected first turn order to persist, got %#v", turnsBody.Turns[0])
+	}
+	if turnsBody.Turns[1]["sender_agent_id"] != "mock_openclaw" || turnsBody.Turns[1]["target_agent_id"] != "mock_hermes" {
+		t.Fatalf("expected second turn order to persist, got %#v", turnsBody.Turns[1])
+	}
+}
+
+func TestTaskCreateWithThreadIDRejectsInvalidAgentPair(t *testing.T) {
+	server, orchestrator := setupServer(t)
+	defer func() { _ = orchestrator.StopAllRuntimeProcesses(context.Background()) }()
+
+	createResp, err := http.Post(server.URL+"/v1/threads", "application/json", strings.NewReader(`{"agent_a_id":"mock_hermes","agent_b_id":"mock_openclaw"}`))
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	defer createResp.Body.Close()
+	var created struct {
+		Thread struct {
+			ThreadID string `json:"thread_id"`
+		} `json:"thread"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode thread create response: %v", err)
+	}
+
+	invalidTaskResp, err := http.Post(server.URL+"/v1/tasks", "application/json", strings.NewReader(`{"thread_id":"`+created.Thread.ThreadID+`","sender":"mock_researcher_http","target_agent_id":"mock_hermes","intent":"summarize","payload":{"mode":"success"}}`))
+	if err != nil {
+		t.Fatalf("create invalid thread task: %v", err)
+	}
+	defer invalidTaskResp.Body.Close()
+	if invalidTaskResp.StatusCode != http.StatusUnprocessableEntity {
+		var body map[string]any
+		_ = json.NewDecoder(invalidTaskResp.Body).Decode(&body)
+		t.Fatalf("expected invalid thread pair rejection, got %d with body %#v", invalidTaskResp.StatusCode, body)
+	}
+}
