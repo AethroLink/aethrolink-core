@@ -24,6 +24,9 @@ func (openClawACPDialect) SubcontextKey(options map[string]any) string {
 }
 
 func (openClawACPDialect) StickyKey(task atypes.TaskEnvelope) string {
+	if task.ThreadID != "" {
+		return task.ThreadID
+	}
 	return openClawSessionKey(task.RuntimeOptions)
 }
 
@@ -77,7 +80,7 @@ func (openClawACPDialect) AcceptedEvent(task atypes.TaskEnvelope, sessionID stri
 		Kind:      atypes.LocalRuntimeEventProgress,
 		State:     atypes.TaskStatusRunning,
 		Message:   "OpenClaw accepted the task",
-		Data:      map[string]any{"session_key": openClawSessionKey(task.RuntimeOptions), "session_id": sessionID},
+		Data:      map[string]any{"session_key": openClawStickySessionKey(task), "session_id": sessionID},
 		CreatedAt: atypes.NowUTC(),
 	}
 }
@@ -93,7 +96,7 @@ func (openClawACPDialect) CompletionEvent(task atypes.TaskEnvelope, finalText st
 }
 
 func (openClawACPDialect) AdapterState(task atypes.TaskEnvelope, sessionID string) map[string]any {
-	sessionKey := openClawSessionKey(task.RuntimeOptions)
+	sessionKey := openClawStickySessionKey(task)
 	return map[string]any{
 		"dialect":                 "openclaw",
 		"session_key":             sessionKey,
@@ -103,7 +106,7 @@ func (openClawACPDialect) AdapterState(task atypes.TaskEnvelope, sessionID strin
 }
 
 func (openClawACPDialect) RehydrateState(task atypes.TaskRecord) map[string]any {
-	sessionKey := openClawSessionKey(task.RuntimeOptions)
+	sessionKey := openClawStickySessionKey(atypes.TaskEnvelope{ThreadID: task.ThreadID, ConversationID: task.ConversationID, RuntimeOptions: task.RuntimeOptions, TaskID: task.TaskID})
 	return map[string]any{"dialect": "openclaw", "session_key": sessionKey, "sticky_key": sessionKey}
 }
 
@@ -138,4 +141,11 @@ func openClawSessionKey(runtimeOptions map[string]any) string {
 		sessionKey = "main"
 	}
 	return sessionKey
+}
+
+func openClawStickySessionKey(task atypes.TaskEnvelope) string {
+	if task.ThreadID != "" {
+		return task.ThreadID
+	}
+	return openClawSessionKey(task.RuntimeOptions)
 }

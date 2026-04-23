@@ -325,3 +325,61 @@ func TestSQLiteStorePersistsThreadsAndTurnsAcrossRestart(t *testing.T) {
 		t.Fatalf("expected thread continuity session reuse, got %#v", turns)
 	}
 }
+
+func TestSQLiteStoreAssignsNextThreadTurnIndexInsideMutationTransaction(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	thread := atypes.ThreadRecord{
+		ThreadID:      atypes.NewID(),
+		AgentAID:      "core",
+		AgentBID:      "openclaw_main",
+		Status:        atypes.ThreadStatusActive,
+		ContinuityKey: "thread:atomic-index",
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := store.InsertThread(ctx, thread); err != nil {
+		t.Fatalf("insert thread: %v", err)
+	}
+	firstTurn := atypes.ThreadTurn{
+		ThreadID:      thread.ThreadID,
+		TaskID:        "task-1",
+		SenderAgentID: "core",
+		TargetAgentID: "openclaw_main",
+		Status:        string(atypes.TaskStatusCreated),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	secondTurn := atypes.ThreadTurn{
+		ThreadID:      thread.ThreadID,
+		TaskID:        "task-2",
+		SenderAgentID: "openclaw_main",
+		TargetAgentID: "core",
+		Status:        string(atypes.TaskStatusCreated),
+		CreatedAt:     now.Add(1 * time.Second),
+		UpdatedAt:     now.Add(1 * time.Second),
+	}
+	if err := store.AppendThreadTurnAndUpdateThread(ctx, thread.ThreadID, firstTurn, "task-1", "core", "openclaw_main", now); err != nil {
+		t.Fatalf("append first thread turn transactionally: %v", err)
+	}
+	if err := store.AppendThreadTurnAndUpdateThread(ctx, thread.ThreadID, secondTurn, "task-2", "openclaw_main", "core", now.Add(1*time.Second)); err != nil {
+		t.Fatalf("append second thread turn transactionally: %v", err)
+	}
+	turns, err := store.ListThreadTurns(ctx, thread.ThreadID)
+	if err != nil {
+		t.Fatalf("list thread turns: %v", err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("expected 2 transactional turns, got %d", len(turns))
+	}
+	if turns[0].TurnIndex != 1 || turns[1].TurnIndex != 2 {
+		t.Fatalf("expected transactional turn indices 1 then 2, got %#v", turns)
+	}
+}
