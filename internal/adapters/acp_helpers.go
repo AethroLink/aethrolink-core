@@ -2,6 +2,7 @@ package adapters
 
 import (
 	"strings"
+	"time"
 
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
@@ -30,6 +31,24 @@ func adapterCWD(runtimeOptions map[string]any) string {
 		cwd = "."
 	}
 	return cwd
+}
+
+// normalizeACPWorkspaceBinding keeps empty dialect bindings aligned with the
+// local-first default working directory.
+func normalizeACPWorkspaceBinding(binding atypes.WorkspaceBinding) atypes.WorkspaceBinding {
+	if binding.CWD == "" {
+		binding.CWD = "."
+	}
+	return binding
+}
+
+// acpPromptTimeout keeps prompt RPCs alive long enough for slow runtimes while
+// still respecting longer idle timeout overrides.
+func acpPromptTimeout(idleTimeout time.Duration) time.Duration {
+	if idleTimeout < time.Minute {
+		return time.Minute
+	}
+	return idleTimeout
 }
 
 // mergeAdapterOptions combines runtime defaults with request overrides without
