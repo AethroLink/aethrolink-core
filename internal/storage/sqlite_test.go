@@ -23,7 +23,7 @@ func TestSQLiteStorePersistsTaskAndEvents(t *testing.T) {
 		ConversationID:  atypes.NewID(),
 		Sender:          "local",
 		Intent:          "code.patch",
-		ResolvedRuntime: "hermes",
+		ResolvedAgentID: "hermes",
 		RuntimeOptions:  map[string]any{"executor": "coder"},
 		Status:          atypes.TaskStatusCreated,
 		CreatedAt:       time.Now().UTC(),
@@ -79,7 +79,7 @@ func TestSQLiteStorePersistsSessionBinding(t *testing.T) {
 
 	ctx := context.Background()
 	binding := atypes.SessionBinding{
-		RuntimeID:       "hermes",
+		TargetID:        "hermes",
 		SubcontextKey:   "executor:coder",
 		StickyKey:       "conversation:abc",
 		Adapter:         "hermes",
@@ -119,7 +119,7 @@ func TestSQLiteStoreAppendEventAndUpdateTaskMutatesTogether(t *testing.T) {
 		ConversationID:  atypes.NewID(),
 		Sender:          "local",
 		Intent:          "code.patch",
-		ResolvedRuntime: "hermes",
+		ResolvedAgentID: "hermes",
 		RuntimeOptions:  map[string]any{"executor": "coder"},
 		Status:          atypes.TaskStatusLaunching,
 		CreatedAt:       time.Now().UTC(),
@@ -178,9 +178,7 @@ func TestSQLiteStorePersistsAgentsAndHeartbeats(t *testing.T) {
 	agent := atypes.AgentRecord{
 		AgentID:        atypes.NewID(),
 		DisplayName:    "hermes-dev",
-		RuntimeKind:    "hermes",
 		TransportKind:  "local_managed",
-		RuntimeID:      "core",
 		Capabilities:   []string{"agent.runtime", "code.patch"},
 		StickyMode:     "conversation",
 		Metadata:       map[string]any{"profile": "aethrolink-agent"},

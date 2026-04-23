@@ -12,17 +12,20 @@ import (
 
 func TestRegisterWritesStateFile(t *testing.T) {
 	var sawRegister bool
+	var requestBody map[string]any
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/agents/register" {
 			http.NotFound(w, r)
 			return
 		}
 		sawRegister = true
+		if err := json.NewDecoder(r.Body).Decode(&requestBody); err != nil {
+			t.Fatalf("decode register request: %v", err)
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"agent": map[string]any{
 				"agent_id":         "agent-123",
 				"display_name":     "hermes-dev",
-				"runtime_kind":     "hermes",
 				"transport_kind":   "local_managed",
 				"status":           "online",
 				"registered_at":    "2026-04-14T00:00:00Z",
@@ -41,7 +44,10 @@ func TestRegisterWritesStateFile(t *testing.T) {
 		"--server", server.URL,
 		"--state-file", statePath,
 		"--display-name", "hermes-dev",
-		"--runtime-kind", "hermes",
+		"--adapter", "acp",
+		"--dialect", "hermes",
+		"--launch-command", "hermes -p aethrolink-agent acp",
+		"--defaults", "executor=aethrolink-agent",
 	}, &out, &errOut); err != nil {
 		t.Fatalf("run register: %v", err)
 	}
@@ -54,6 +60,9 @@ func TestRegisterWritesStateFile(t *testing.T) {
 	}
 	if state.AgentID != "agent-123" {
 		t.Fatalf("expected saved agent id, got %q", state.AgentID)
+	}
+	if requestBody["adapter"] != "acp" {
+		t.Fatalf("expected adapter to be sent, got %#v", requestBody["adapter"])
 	}
 }
 
@@ -81,7 +90,7 @@ func TestCallUsesStateAgentIDAsSender(t *testing.T) {
 		"call",
 		"--server", server.URL,
 		"--state-file", statePath,
-		"--target-runtime", "core",
+		"--target-agent-id", "core",
 		"--intent", "agent.runtime",
 		"--text", "hello",
 	}, &out, &errOut); err != nil {
@@ -96,5 +105,117 @@ func TestCallUsesStateAgentIDAsSender(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "task-123") {
 		t.Fatalf("expected task id in output, got %q", out.String())
+	}
+}
+
+func TestEnsureRegisteredReusesExistingAgentState(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "agent.json")
+	if err := saveAgentState(statePath, agentState{AgentID: "agent-123"}); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	registerCalls := 0
+	getCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/agents/agent-123":
+			getCalls++
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"agent_id":         "agent-123",
+				"display_name":     "hermes-dev",
+				"transport_kind":   "local_managed",
+				"status":           "online",
+				"registered_at":    "2026-04-14T00:00:00Z",
+				"updated_at":       "2026-04-14T00:00:00Z",
+				"last_seen_at":     "2026-04-14T00:00:00Z",
+				"lease_expires_at": "2026-04-14T00:05:00Z",
+			})
+		case "/v1/agents/register":
+			registerCalls++
+			http.Error(w, "should not register", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	if err := run([]string{
+		"ensure-registered",
+		"--server", server.URL,
+		"--state-file", statePath,
+		"--display-name", "hermes-dev",
+	}, &out, &errOut); err != nil {
+		t.Fatalf("run ensure-registered: %v", err)
+	}
+	if getCalls != 1 {
+		t.Fatalf("expected one lookup call, got %d", getCalls)
+	}
+	if registerCalls != 0 {
+		t.Fatalf("expected no register calls, got %d", registerCalls)
+	}
+}
+
+func TestCallHeartbeatRefreshesLeaseBeforeSubmit(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "agent.json")
+	if err := saveAgentState(statePath, agentState{AgentID: "agent-123"}); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	var calls []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls = append(calls, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/agents/agent-123/heartbeat":
+			_ = json.NewEncoder(w).Encode(map[string]any{"agent": map[string]any{"agent_id": "agent-123"}})
+		case "/v1/tasks":
+			_ = json.NewEncoder(w).Encode(map[string]any{"task": map[string]any{"task_id": "task-123"}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	if err := run([]string{
+		"call",
+		"--server", server.URL,
+		"--state-file", statePath,
+		"--target-agent-id", "core",
+		"--intent", "agent.runtime",
+		"--text", "hello",
+		"--heartbeat",
+	}, &out, &errOut); err != nil {
+		t.Fatalf("run call with heartbeat: %v", err)
+	}
+	if len(calls) != 2 || calls[0] != "/v1/agents/agent-123/heartbeat" || calls[1] != "/v1/tasks" {
+		t.Fatalf("expected heartbeat then task submit, got %#v", calls)
+	}
+}
+
+func TestAgentsAndTargetsCommands(t *testing.T) {
+	var paths []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/agents":
+			_ = json.NewEncoder(w).Encode(map[string]any{"agents": []map[string]any{{"agent_id": "agent-123"}}})
+		case "/v1/targets":
+			_ = json.NewEncoder(w).Encode(map[string]any{"targets": []map[string]any{{"agent_id": "core"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	if err := run([]string{"agents", "--server", server.URL}, &out, &errOut); err != nil {
+		t.Fatalf("run agents: %v", err)
+	}
+	if err := run([]string{"targets", "--server", server.URL}, &out, &errOut); err != nil {
+		t.Fatalf("run targets: %v", err)
+	}
+	if len(paths) != 2 || paths[0] != "/v1/agents" || paths[1] != "/v1/targets" {
+		t.Fatalf("unexpected request paths: %#v", paths)
 	}
 }

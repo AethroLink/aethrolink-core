@@ -62,10 +62,9 @@ func newHermesAdapterForRecoveryTest(t *testing.T) *ACPAdapter {
 	manager := runtime.NewManager(store)
 	agentService := agents.NewService(store)
 	if _, err := agentService.Register(context.Background(), atypes.AgentRegistrationRequest{
+		AgentID:       "hermes_test",
 		DisplayName:   "hermes-test",
-		RuntimeKind:   "hermes",
 		TransportKind: "local_managed",
-		RuntimeID:     "hermes_test",
 		Adapter:       "acp",
 		Dialect:       "hermes",
 		Launch:        atypes.LaunchSpec{Mode: atypes.LaunchModeManaged, Command: []string{"go", "run", root + "/cmd/fake-acp-client-agent"}},

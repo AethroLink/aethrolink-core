@@ -26,3 +26,8 @@ worktrees/
 target/test-registry-*.yaml
 .omx/
 /configs/*
+.collaborator
+
+# local generated architecture artifacts
+/aethrolink-core-architecture.html
+/aethrolink-core-architecture.png

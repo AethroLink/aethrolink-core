@@ -28,10 +28,8 @@ func (s *Service) Register(ctx context.Context, req atypes.AgentRegistrationRequ
 	record := atypes.AgentRecord{
 		AgentID:        req.AgentID,
 		DisplayName:    req.DisplayName,
-		RuntimeKind:    req.RuntimeKind,
 		TransportKind:  req.TransportKind,
 		Endpoint:       req.Endpoint,
-		RuntimeID:      req.RuntimeID,
 		Adapter:        req.Adapter,
 		Dialect:        req.Dialect,
 		Healthcheck:    req.Healthcheck,
@@ -103,29 +101,28 @@ func (s *Service) List(ctx context.Context) ([]atypes.AgentRecord, error) {
 	return agents, nil
 }
 
-func (s *Service) ResolveRuntime(ctx context.Context, runtimeID string) (atypes.RuntimeSpec, error) {
-	agents, err := s.List(ctx)
+func (s *Service) ResolveRuntime(ctx context.Context, targetID string) (atypes.RuntimeSpec, error) {
+	agents, err := s.store.ListAgents(ctx)
 	if err != nil {
 		return atypes.RuntimeSpec{}, err
 	}
 	for _, agent := range agents {
-		if agent.RuntimeID == runtimeID && agent.Status == atypes.AgentStatusOnline {
+		if agent.AgentID == targetID {
 			return agentToRuntimeSpec(agent), nil
 		}
 	}
-	return atypes.RuntimeSpec{}, fmt.Errorf("runtime not found: %s", runtimeID)
+	return atypes.RuntimeSpec{}, fmt.Errorf("target not found: %s", targetID)
 }
 
 func (s *Service) ListRuntimes(ctx context.Context) ([]atypes.RuntimeSpec, error) {
-	agents, err := s.List(ctx)
+	agents, err := s.store.ListAgents(ctx)
 	if err != nil {
 		return nil, err
 	}
 	out := make([]atypes.RuntimeSpec, 0, len(agents))
 	for _, agent := range agents {
-		if agent.Status != atypes.AgentStatusOnline || agent.RuntimeID == "" {
-			continue
-		}
+		// Registered targets remain discoverable even while offline so the
+		// orchestrator can launch them on demand during task dispatch.
 		out = append(out, agentToRuntimeSpec(agent))
 	}
 	return out, nil
@@ -133,7 +130,7 @@ func (s *Service) ListRuntimes(ctx context.Context) ([]atypes.RuntimeSpec, error
 
 func agentToRuntimeSpec(agent atypes.AgentRecord) atypes.RuntimeSpec {
 	return atypes.RuntimeSpec{
-		RuntimeID:    agent.RuntimeID,
+		TargetID:     agent.AgentID,
 		Adapter:      agent.Adapter,
 		Dialect:      agent.Dialect,
 		Endpoint:     agent.Endpoint,

@@ -42,7 +42,7 @@ func (a *ACPAdapter) resolveACPDialect(spec atypes.RuntimeSpec) (acpDialect, err
 	}
 	dialect, ok := a.dialects[name]
 	if !ok {
-		return nil, fmt.Errorf("unsupported acp dialect for runtime %s: %s", spec.RuntimeID, name)
+		return nil, fmt.Errorf("unsupported acp dialect for target %s: %s", spec.TargetID, name)
 	}
 	return dialect, nil
 }

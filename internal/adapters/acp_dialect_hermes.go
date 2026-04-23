@@ -21,7 +21,7 @@ func (hermesACPDialect) Command(spec atypes.RuntimeSpec, options map[string]any)
 		return nil, fmt.Errorf("missing hermes command for executor %s", executor)
 	}
 	if len(spec.Launch.Command) == 0 {
-		return nil, fmt.Errorf("missing launch command for runtime %s", spec.RuntimeID)
+		return nil, fmt.Errorf("missing launch command for target %s", spec.TargetID)
 	}
 	return spec.Launch.Command, nil
 }

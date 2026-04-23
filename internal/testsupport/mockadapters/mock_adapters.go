@@ -34,20 +34,20 @@ func (a *Hermes) Capabilities(context.Context) (map[string]any, error) {
 	return map[string]any{"adapter": "mock_hermes", "mode": "testsupport"}, nil
 }
 
-func (a *Hermes) EnsureReady(ctx context.Context, runtimeID string, options map[string]any) (atypes.RuntimeLease, error) {
-	spec, err := a.discovery.ResolveRuntime(ctx, runtimeID)
+func (a *Hermes) EnsureReady(ctx context.Context, targetID string, options map[string]any) (atypes.RuntimeLease, error) {
+	spec, err := a.discovery.ResolveRuntime(ctx, targetID)
 	if err != nil {
 		return atypes.RuntimeLease{}, err
 	}
 	executor := stringOption(options, "executor", "coder")
 	command := spec.Launch.Commands[executor]
-	lease, _, err := a.runtime.EnsureStdioWorker(ctx, runtimeID, "executor:"+executor, command)
+	lease, _, err := a.runtime.EnsureStdioWorker(ctx, targetID, "executor:"+executor, command)
 	return lease, err
 }
 
 func (a *Hermes) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
 	executor := lease.SubcontextKey[len("executor:"):]
-	worker := a.runtime.GetStdioWorker(task.TargetRuntime, lease.SubcontextKey)
+	worker := a.runtime.GetStdioWorker(task.TargetAgentID, lease.SubcontextKey)
 	if worker == nil {
 		return atypes.RemoteHandle{}, fmt.Errorf("missing stdio worker")
 	}
@@ -73,7 +73,7 @@ func (a *Hermes) Submit(ctx context.Context, task atypes.TaskEnvelope, lease aty
 	remoteExec, _ := result["remote_execution_id"].(string)
 	return atypes.RemoteHandle{
 		TaskID:            task.TaskID,
-		RuntimeID:         task.TargetRuntime,
+		TargetID:          task.TargetAgentID,
 		Binding:           "acp_client_stdio",
 		RemoteExecutionID: remoteExec,
 		RemoteSessionID:   sessionID,
@@ -82,7 +82,7 @@ func (a *Hermes) Submit(ctx context.Context, task atypes.TaskEnvelope, lease aty
 }
 
 func (a *Hermes) StreamEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
-	worker := a.runtime.GetStdioWorker(handle.RuntimeID, "executor:"+stringOption(handle.AdapterState, "executor", "coder"))
+	worker := a.runtime.GetStdioWorker(handle.TargetID, "executor:"+stringOption(handle.AdapterState, "executor", "coder"))
 	out := make(chan atypes.TaskEvent, 64)
 	errCh := make(chan error, 1)
 	if worker == nil {
@@ -98,7 +98,7 @@ func (a *Hermes) StreamEvents(ctx context.Context, handle atypes.RemoteHandle) (
 }
 
 func (a *Hermes) Resume(ctx context.Context, handle atypes.RemoteHandle, payload map[string]any) error {
-	worker := a.runtime.GetStdioWorker(handle.RuntimeID, "executor:"+stringOption(handle.AdapterState, "executor", "coder"))
+	worker := a.runtime.GetStdioWorker(handle.TargetID, "executor:"+stringOption(handle.AdapterState, "executor", "coder"))
 	if worker == nil {
 		return fmt.Errorf("missing stdio worker")
 	}
@@ -106,19 +106,19 @@ func (a *Hermes) Resume(ctx context.Context, handle atypes.RemoteHandle, payload
 }
 
 func (a *Hermes) Cancel(ctx context.Context, handle atypes.RemoteHandle) error {
-	worker := a.runtime.GetStdioWorker(handle.RuntimeID, "executor:"+stringOption(handle.AdapterState, "executor", "coder"))
+	worker := a.runtime.GetStdioWorker(handle.TargetID, "executor:"+stringOption(handle.AdapterState, "executor", "coder"))
 	if worker == nil {
 		return fmt.Errorf("missing stdio worker")
 	}
 	return drivers.NewACPClientDriver(worker).SessionCancel(handle.RemoteSessionID)
 }
 
-func (a *Hermes) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
-	return a.runtime.Health(runtimeID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
+func (a *Hermes) Health(ctx context.Context, targetID string, options map[string]any) (map[string]any, error) {
+	return a.runtime.Health(targetID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
 }
 
 func (a *Hermes) RehydrateHandle(task atypes.TaskRecord, _ atypes.RuntimeSpec) (atypes.RemoteHandle, error) {
-	handle := atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+	handle := atypes.RemoteHandle{TaskID: task.TaskID, TargetID: task.ResolvedAgentID}
 	if task.Remote != nil {
 		handle.Binding = task.Remote.Binding
 		handle.RemoteExecutionID = task.Remote.RemoteExecutionID
@@ -148,19 +148,19 @@ func (a *OpenClaw) Capabilities(context.Context) (map[string]any, error) {
 	return map[string]any{"adapter": "mock_openclaw", "mode": "testsupport"}, nil
 }
 
-func (a *OpenClaw) EnsureReady(ctx context.Context, runtimeID string, options map[string]any) (atypes.RuntimeLease, error) {
-	spec, err := a.discovery.ResolveRuntime(ctx, runtimeID)
+func (a *OpenClaw) EnsureReady(ctx context.Context, targetID string, options map[string]any) (atypes.RuntimeLease, error) {
+	spec, err := a.discovery.ResolveRuntime(ctx, targetID)
 	if err != nil {
 		return atypes.RuntimeLease{}, err
 	}
 	sessionKey := stringOption(options, "session_key", "main")
-	lease, _, err := a.runtime.EnsureStdioWorker(ctx, runtimeID, "session:"+sessionKey, spec.Launch.Command)
+	lease, _, err := a.runtime.EnsureStdioWorker(ctx, targetID, "session:"+sessionKey, spec.Launch.Command)
 	return lease, err
 }
 
 func (a *OpenClaw) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
 	sessionKey := lease.SubcontextKey[len("session:"):]
-	worker := a.runtime.GetStdioWorker(task.TargetRuntime, lease.SubcontextKey)
+	worker := a.runtime.GetStdioWorker(task.TargetAgentID, lease.SubcontextKey)
 	if worker == nil {
 		return atypes.RemoteHandle{}, fmt.Errorf("missing stdio worker")
 	}
@@ -196,7 +196,7 @@ func (a *OpenClaw) Submit(ctx context.Context, task atypes.TaskEnvelope, lease a
 	remoteExec, _ := result["remote_execution_id"].(string)
 	return atypes.RemoteHandle{
 		TaskID:            task.TaskID,
-		RuntimeID:         task.TargetRuntime,
+		TargetID:          task.TargetAgentID,
 		Binding:           "acp_client_stdio",
 		RemoteExecutionID: remoteExec,
 		RemoteSessionID:   sessionID,
@@ -205,7 +205,7 @@ func (a *OpenClaw) Submit(ctx context.Context, task atypes.TaskEnvelope, lease a
 }
 
 func (a *OpenClaw) StreamEvents(ctx context.Context, handle atypes.RemoteHandle) (<-chan atypes.TaskEvent, <-chan error) {
-	worker := a.runtime.GetStdioWorker(handle.RuntimeID, "session:"+stringOption(handle.AdapterState, "session_key", "main"))
+	worker := a.runtime.GetStdioWorker(handle.TargetID, "session:"+stringOption(handle.AdapterState, "session_key", "main"))
 	out := make(chan atypes.TaskEvent, 64)
 	errCh := make(chan error, 1)
 	if worker == nil {
@@ -221,7 +221,7 @@ func (a *OpenClaw) StreamEvents(ctx context.Context, handle atypes.RemoteHandle)
 }
 
 func (a *OpenClaw) Resume(ctx context.Context, handle atypes.RemoteHandle, payload map[string]any) error {
-	worker := a.runtime.GetStdioWorker(handle.RuntimeID, "session:"+stringOption(handle.AdapterState, "session_key", "main"))
+	worker := a.runtime.GetStdioWorker(handle.TargetID, "session:"+stringOption(handle.AdapterState, "session_key", "main"))
 	if worker == nil {
 		return fmt.Errorf("missing stdio worker")
 	}
@@ -229,19 +229,19 @@ func (a *OpenClaw) Resume(ctx context.Context, handle atypes.RemoteHandle, paylo
 }
 
 func (a *OpenClaw) Cancel(ctx context.Context, handle atypes.RemoteHandle) error {
-	worker := a.runtime.GetStdioWorker(handle.RuntimeID, "session:"+stringOption(handle.AdapterState, "session_key", "main"))
+	worker := a.runtime.GetStdioWorker(handle.TargetID, "session:"+stringOption(handle.AdapterState, "session_key", "main"))
 	if worker == nil {
 		return fmt.Errorf("missing stdio worker")
 	}
 	return drivers.NewACPClientDriver(worker).SessionCancel(handle.RemoteSessionID)
 }
 
-func (a *OpenClaw) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
-	return a.runtime.Health(runtimeID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
+func (a *OpenClaw) Health(ctx context.Context, targetID string, options map[string]any) (map[string]any, error) {
+	return a.runtime.Health(targetID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
 }
 
 func (a *OpenClaw) RehydrateHandle(task atypes.TaskRecord, _ atypes.RuntimeSpec) (atypes.RemoteHandle, error) {
-	handle := atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+	handle := atypes.RemoteHandle{TaskID: task.TaskID, TargetID: task.ResolvedAgentID}
 	if task.Remote != nil {
 		handle.Binding = task.Remote.Binding
 		handle.RemoteExecutionID = task.Remote.RemoteExecutionID
@@ -270,16 +270,16 @@ func (a *ACPHTTP) Capabilities(context.Context) (map[string]any, error) {
 	return map[string]any{"adapter": "mock_acp_comm_http", "mode": "testsupport"}, nil
 }
 
-func (a *ACPHTTP) EnsureReady(ctx context.Context, runtimeID string, _ map[string]any) (atypes.RuntimeLease, error) {
-	spec, err := a.discovery.ResolveRuntime(ctx, runtimeID)
+func (a *ACPHTTP) EnsureReady(ctx context.Context, targetID string, _ map[string]any) (atypes.RuntimeLease, error) {
+	spec, err := a.discovery.ResolveRuntime(ctx, targetID)
 	if err != nil {
 		return atypes.RuntimeLease{}, err
 	}
-	return a.runtime.EnsureProcess(ctx, runtimeID, "", spec.Launch.Command, spec.Healthcheck)
+	return a.runtime.EnsureProcess(ctx, targetID, "", spec.Launch.Command, spec.Healthcheck)
 }
 
 func (a *ACPHTTP) Submit(ctx context.Context, task atypes.TaskEnvelope, _ atypes.RuntimeLease) (atypes.RemoteHandle, error) {
-	spec, err := a.discovery.ResolveRuntime(ctx, task.TargetRuntime)
+	spec, err := a.discovery.ResolveRuntime(ctx, task.TargetAgentID)
 	if err != nil {
 		return atypes.RemoteHandle{}, err
 	}
@@ -294,7 +294,7 @@ func (a *ACPHTTP) Submit(ctx context.Context, task atypes.TaskEnvelope, _ atypes
 	sessionID, _ := result["session_id"].(string)
 	return atypes.RemoteHandle{
 		TaskID:            task.TaskID,
-		RuntimeID:         task.TargetRuntime,
+		TargetID:          task.TargetAgentID,
 		Binding:           "acp_comm_http",
 		RemoteExecutionID: runID,
 		RemoteSessionID:   sessionID,
@@ -338,12 +338,12 @@ func (a *ACPHTTP) Cancel(ctx context.Context, handle atypes.RemoteHandle) error 
 	return a.driver.CancelRun(stringOption(handle.AdapterState, "endpoint", ""), handle.RemoteExecutionID)
 }
 
-func (a *ACPHTTP) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
-	return a.runtime.Health(runtimeID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
+func (a *ACPHTTP) Health(ctx context.Context, targetID string, options map[string]any) (map[string]any, error) {
+	return a.runtime.Health(targetID, a.SubcontextKey(atypes.RuntimeSpec{}, options)), nil
 }
 
 func (a *ACPHTTP) RehydrateHandle(task atypes.TaskRecord, spec atypes.RuntimeSpec) (atypes.RemoteHandle, error) {
-	handle := atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+	handle := atypes.RemoteHandle{TaskID: task.TaskID, TargetID: task.ResolvedAgentID}
 	if task.Remote != nil {
 		handle.Binding = task.Remote.Binding
 		handle.RemoteExecutionID = task.Remote.RemoteExecutionID

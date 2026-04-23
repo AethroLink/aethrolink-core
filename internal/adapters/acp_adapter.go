@@ -48,8 +48,8 @@ func (a *ACPAdapter) Capabilities(context.Context) (map[string]any, error) {
 	return map[string]any{"adapter": "acp", "mode": "acp_bridge"}, nil
 }
 
-func (a *ACPAdapter) EnsureReady(ctx context.Context, runtimeID string, options map[string]any) (atypes.RuntimeLease, error) {
-	spec, err := a.discovery.ResolveRuntime(ctx, runtimeID)
+func (a *ACPAdapter) EnsureReady(ctx context.Context, targetID string, options map[string]any) (atypes.RuntimeLease, error) {
+	spec, err := a.discovery.ResolveRuntime(ctx, targetID)
 	if err != nil {
 		return atypes.RuntimeLease{}, err
 	}
@@ -68,7 +68,7 @@ func (a *ACPAdapter) EnsureReady(ctx context.Context, runtimeID string, options 
 }
 
 func (a *ACPAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {
-	spec, err := a.discovery.ResolveRuntime(ctx, task.TargetRuntime)
+	spec, err := a.discovery.ResolveRuntime(ctx, task.TargetAgentID)
 	if err != nil {
 		return atypes.RemoteHandle{}, err
 	}
@@ -81,11 +81,11 @@ func (a *ACPAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease
 
 func (a *ACPAdapter) submitPrompt(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease, dialect acpDialect) (atypes.RemoteHandle, error) {
 	stickyKey := dialect.StickyKey(task)
-	scope := adaptersupport.SessionScope(task.TargetRuntime, lease.SubcontextKey, stickyKey)
+	scope := adaptersupport.SessionScope(task.TargetAgentID, lease.SubcontextKey, stickyKey)
 	if err := a.sessions.TryAcquire(scope, task.TaskID); err != nil {
 		return atypes.RemoteHandle{}, err
 	}
-	if err := a.transport.Initialize(ctx, task.TargetRuntime, lease.SubcontextKey, map[string]any{"protocolVersion": 1}, acpInitializeTimeout(task.RuntimeOptions)); err != nil {
+	if err := a.transport.Initialize(ctx, task.TargetAgentID, lease.SubcontextKey, map[string]any{"protocolVersion": 1}, acpInitializeTimeout(task.RuntimeOptions)); err != nil {
 		a.sessions.Release(scope, task.TaskID)
 		return atypes.RemoteHandle{}, err
 	}
@@ -105,7 +105,7 @@ func (a *ACPAdapter) submitPrompt(ctx context.Context, task atypes.TaskEnvelope,
 		a.sessions.Release(scope, task.TaskID)
 		return atypes.RemoteHandle{}, err
 	}
-	if err := a.sessions.PersistBinding(ctx, task.TargetRuntime, lease.SubcontextKey, stickyKey, dialect.BindingName(), sessionID, dialect.BindingMetadata(task.RuntimeOptions, binding), now); err != nil {
+	if err := a.sessions.PersistBinding(ctx, task.TargetAgentID, lease.SubcontextKey, stickyKey, dialect.BindingName(), sessionID, dialect.BindingMetadata(task.RuntimeOptions, binding), now); err != nil {
 		a.sessions.Release(scope, task.TaskID)
 		return atypes.RemoteHandle{}, err
 	}
@@ -115,7 +115,7 @@ func (a *ACPAdapter) submitPrompt(ctx context.Context, task atypes.TaskEnvelope,
 	a.runs[task.TaskID] = run
 	a.mu.Unlock()
 
-	sub, cancel, err := a.transport.Stream(ctx, task.TargetRuntime, lease.SubcontextKey)
+	sub, cancel, err := a.transport.Stream(ctx, task.TargetAgentID, lease.SubcontextKey)
 	if err != nil {
 		a.sessions.Release(scope, task.TaskID)
 		a.deleteRun(task.TaskID)
@@ -125,7 +125,7 @@ func (a *ACPAdapter) submitPrompt(ctx context.Context, task atypes.TaskEnvelope,
 
 	return atypes.RemoteHandle{
 		TaskID:            task.TaskID,
-		RuntimeID:         task.TargetRuntime,
+		TargetID:          task.TargetAgentID,
 		Binding:           dialect.BindingName(),
 		RemoteExecutionID: sessionID,
 		RemoteSessionID:   sessionID,
@@ -134,7 +134,7 @@ func (a *ACPAdapter) submitPrompt(ctx context.Context, task atypes.TaskEnvelope,
 }
 
 func (a *ACPAdapter) loadOrCreateSession(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease, dialect acpDialect, binding atypes.WorkspaceBinding, stickyKey string, now time.Time) (string, error) {
-	bound, exists, err := a.sessions.LoadBinding(ctx, task.TargetRuntime, lease.SubcontextKey, stickyKey)
+	bound, exists, err := a.sessions.LoadBinding(ctx, task.TargetAgentID, lease.SubcontextKey, stickyKey)
 	if err != nil {
 		return "", err
 	}
@@ -143,7 +143,7 @@ func (a *ACPAdapter) loadOrCreateSession(ctx context.Context, task atypes.TaskEn
 	if exists && !adaptersupport.SessionBindingStale(bound, idleTimeout, now) {
 		sessionID, err := a.transport.LoadSession(
 			ctx,
-			task.TargetRuntime,
+			task.TargetAgentID,
 			lease.SubcontextKey,
 			bound.RemoteSessionID,
 			dialect.LoadSessionPayload(bound.RemoteSessionID, binding, task.RuntimeOptions),
@@ -153,7 +153,7 @@ func (a *ACPAdapter) loadOrCreateSession(ctx context.Context, task atypes.TaskEn
 			return sessionID, nil
 		}
 	}
-	return a.transport.OpenSession(ctx, task.TargetRuntime, lease.SubcontextKey, dialect.OpenSessionPayload(binding, task.RuntimeOptions), handshakeTimeout)
+	return a.transport.OpenSession(ctx, task.TargetAgentID, lease.SubcontextKey, dialect.OpenSessionPayload(binding, task.RuntimeOptions), handshakeTimeout)
 }
 
 func (a *ACPAdapter) consumeRun(ctx context.Context, run *acpRun, sub <-chan map[string]any, cancel func(), task atypes.TaskEnvelope, lease atypes.RuntimeLease, dialect acpDialect, binding atypes.WorkspaceBinding, stickyKey, sessionID, promptText string, promptTimeout, idleTimeout time.Duration) {
@@ -162,7 +162,7 @@ func (a *ACPAdapter) consumeRun(ctx context.Context, run *acpRun, sub <-chan map
 	defer close(run.events)
 	defer close(run.errs)
 
-	scope := adaptersupport.SessionScope(task.TargetRuntime, lease.SubcontextKey, stickyKey)
+	scope := adaptersupport.SessionScope(task.TargetAgentID, lease.SubcontextKey, stickyKey)
 	trackerState := &acpRunTracker{}
 	tracker := &acpNotificationTracker{run: trackerState}
 	lastActivity := time.Now()
@@ -176,7 +176,7 @@ func (a *ACPAdapter) consumeRun(ctx context.Context, run *acpRun, sub <-chan map
 	go func() {
 		promptResult <- a.transport.Prompt(
 			ctx,
-			task.TargetRuntime,
+			task.TargetAgentID,
 			lease.SubcontextKey,
 			sessionID,
 			dialect.PromptPayload(sessionID, promptText, binding, task.RuntimeOptions),
@@ -200,7 +200,7 @@ func (a *ACPAdapter) consumeRun(ctx context.Context, run *acpRun, sub <-chan map
 			if promptFinished && !drainUntil.IsZero() && time.Now().After(drainUntil) {
 				finalText := adapterTrimText(trackerState.FinalText())
 				if dialect.ShouldRecoverFinalText(finalText, trackerState.sawStructuredEvents) {
-					finalText = a.recoverFinalText(context.Background(), task.TargetRuntime, lease.SubcontextKey, sessionID, binding, task.RuntimeOptions, dialect)
+					finalText = a.recoverFinalText(context.Background(), task.TargetAgentID, lease.SubcontextKey, sessionID, binding, task.RuntimeOptions, dialect)
 				}
 				trackerState.SetFinalText(finalText)
 				if syntheticCompletionDecision(dialect, trackerState) {
@@ -226,7 +226,7 @@ func (a *ACPAdapter) consumeRun(ctx context.Context, run *acpRun, sub <-chan map
 			if promptFinished {
 				drainUntil = time.Now().Add(250 * time.Millisecond)
 			}
-			_ = a.sessions.TouchActivity(context.Background(), task.TargetRuntime, lease.SubcontextKey, stickyKey, lastActivity.UTC())
+			_ = a.sessions.TouchActivity(context.Background(), task.TargetAgentID, lease.SubcontextKey, stickyKey, lastActivity.UTC())
 			events, terminal := dialect.HandleNotification(params, tracker)
 			trackerState.Record(events)
 			for _, event := range events {
@@ -292,7 +292,7 @@ func (a *ACPAdapter) Resume(ctx context.Context, handle atypes.RemoteHandle, pay
 	if err != nil {
 		return err
 	}
-	return a.transport.Resume(ctx, handle.RuntimeID, dialect.SubcontextKey(handle.AdapterState), handle.RemoteSessionID, resumePayload)
+	return a.transport.Resume(ctx, handle.TargetID, dialect.SubcontextKey(handle.AdapterState), handle.RemoteSessionID, resumePayload)
 }
 
 func (a *ACPAdapter) Cancel(ctx context.Context, handle atypes.RemoteHandle) error {
@@ -300,11 +300,11 @@ func (a *ACPAdapter) Cancel(ctx context.Context, handle atypes.RemoteHandle) err
 	if err != nil {
 		return err
 	}
-	return a.transport.Cancel(ctx, handle.RuntimeID, dialect.SubcontextKey(handle.AdapterState), handle.RemoteSessionID)
+	return a.transport.Cancel(ctx, handle.TargetID, dialect.SubcontextKey(handle.AdapterState), handle.RemoteSessionID)
 }
 
-func (a *ACPAdapter) Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error) {
-	spec, err := a.discovery.ResolveRuntime(ctx, runtimeID)
+func (a *ACPAdapter) Health(ctx context.Context, targetID string, options map[string]any) (map[string]any, error) {
+	spec, err := a.discovery.ResolveRuntime(ctx, targetID)
 	if err != nil {
 		return nil, err
 	}
@@ -321,7 +321,7 @@ func (a *ACPAdapter) RehydrateHandle(task atypes.TaskRecord, spec atypes.Runtime
 	if err != nil {
 		return atypes.RemoteHandle{}, err
 	}
-	handle := atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+	handle := atypes.RemoteHandle{TaskID: task.TaskID, TargetID: task.ResolvedAgentID}
 	if task.Remote != nil {
 		handle.Binding = task.Remote.Binding
 		handle.RemoteExecutionID = task.Remote.RemoteExecutionID
@@ -339,13 +339,13 @@ func (a *ACPAdapter) SubcontextKey(spec atypes.RuntimeSpec, runtimeOptions map[s
 	return dialect.SubcontextKey(mergeAdapterOptions(spec.Defaults, runtimeOptions))
 }
 
-func (a *ACPAdapter) recoverFinalText(ctx context.Context, runtimeID, subcontextKey, sessionID string, binding atypes.WorkspaceBinding, runtimeOptions map[string]any, dialect acpDialect) string {
+func (a *ACPAdapter) recoverFinalText(ctx context.Context, targetID, subcontextKey, sessionID string, binding atypes.WorkspaceBinding, runtimeOptions map[string]any, dialect acpDialect) string {
 	if sessionID == "" {
 		return ""
 	}
 	return adaptersupport.RecoverAssistantTextFromSessionLoad(
 		ctx,
-		a.runtime.GetStdioWorker(runtimeID, subcontextKey),
+		a.runtime.GetStdioWorker(targetID, subcontextKey),
 		sessionID,
 		dialect.LoadSessionPayload(sessionID, binding, runtimeOptions),
 	)

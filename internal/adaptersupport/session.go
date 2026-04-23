@@ -28,8 +28,8 @@ func NewSessionCoordinator(store *storage.SQLiteStore) *SessionCoordinator {
 }
 
 // SessionScope returns the in-process lock scope for a sticky runtime session.
-func SessionScope(runtimeID, subcontextKey, stickyKey string) string {
-	return runtimeID + "::" + subcontextKey + "::" + stickyKey
+func SessionScope(targetID, subcontextKey, stickyKey string) string {
+	return targetID + "::" + subcontextKey + "::" + stickyKey
 }
 
 // TryAcquire rejects concurrent prompts targeting the same sticky session scope.
@@ -53,8 +53,8 @@ func (c *SessionCoordinator) Release(scope, taskID string) {
 }
 
 // LoadBinding loads a persisted sticky session binding if one already exists.
-func (c *SessionCoordinator) LoadBinding(ctx context.Context, runtimeID, subcontextKey, stickyKey string) (atypes.SessionBinding, bool, error) {
-	binding, err := c.store.GetSessionBinding(ctx, runtimeID, subcontextKey, stickyKey)
+func (c *SessionCoordinator) LoadBinding(ctx context.Context, targetID, subcontextKey, stickyKey string) (atypes.SessionBinding, bool, error) {
+	binding, err := c.store.GetSessionBinding(ctx, targetID, subcontextKey, stickyKey)
 	if err == nil {
 		return binding, true, nil
 	}
@@ -66,15 +66,15 @@ func (c *SessionCoordinator) LoadBinding(ctx context.Context, runtimeID, subcont
 
 // PersistBinding upserts the sticky-session binding after a runtime accepts or
 // refreshes a session.
-func (c *SessionCoordinator) PersistBinding(ctx context.Context, runtimeID, subcontextKey, stickyKey, adapter, remoteSessionID string, metadata map[string]any, touchedAt time.Time) error {
-	binding, exists, err := c.LoadBinding(ctx, runtimeID, subcontextKey, stickyKey)
+func (c *SessionCoordinator) PersistBinding(ctx context.Context, targetID, subcontextKey, stickyKey, adapter, remoteSessionID string, metadata map[string]any, touchedAt time.Time) error {
+	binding, exists, err := c.LoadBinding(ctx, targetID, subcontextKey, stickyKey)
 	if err != nil {
 		return err
 	}
 	if !exists {
 		binding.CreatedAt = touchedAt
 	}
-	binding.RuntimeID = runtimeID
+	binding.TargetID = targetID
 	binding.SubcontextKey = subcontextKey
 	binding.StickyKey = stickyKey
 	binding.Adapter = adapter
@@ -87,8 +87,8 @@ func (c *SessionCoordinator) PersistBinding(ctx context.Context, runtimeID, subc
 }
 
 // TouchActivity records the latest observed runtime activity for a sticky session.
-func (c *SessionCoordinator) TouchActivity(ctx context.Context, runtimeID, subcontextKey, stickyKey string, touchedAt time.Time) error {
-	return c.store.TouchSessionBindingActivity(ctx, runtimeID, subcontextKey, stickyKey, touchedAt)
+func (c *SessionCoordinator) TouchActivity(ctx context.Context, targetID, subcontextKey, stickyKey string, touchedAt time.Time) error {
+	return c.store.TouchSessionBindingActivity(ctx, targetID, subcontextKey, stickyKey, touchedAt)
 }
 
 // SessionIdleTimeout resolves the sticky-session idle timeout from runtime options.

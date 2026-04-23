@@ -62,10 +62,9 @@ func newOpenClawAdapterForRecoveryTest(t *testing.T) *ACPAdapter {
 	manager := runtime.NewManager(store)
 	agentService := agents.NewService(store)
 	if _, err := agentService.Register(context.Background(), atypes.AgentRegistrationRequest{
+		AgentID:       "openclaw_test",
 		DisplayName:   "openclaw-test",
-		RuntimeKind:   "openclaw",
 		TransportKind: "local_managed",
-		RuntimeID:     "openclaw_test",
 		Adapter:       "acp",
 		Dialect:       "openclaw",
 		Launch:        atypes.LaunchSpec{Mode: atypes.LaunchModeManaged, Command: []string{"go", "run", root + "/cmd/fake-acp-client-agent"}},

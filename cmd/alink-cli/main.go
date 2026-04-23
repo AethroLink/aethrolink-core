@@ -45,11 +45,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 func (c cli) run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: alink-cli <register|heartbeat|call|task-get|task-events>")
+		return errors.New("usage: alink-cli <register|ensure-registered|heartbeat|call|task-get|task-events|agents|targets>")
 	}
 	switch args[0] {
 	case "register":
 		return c.runRegister(args[1:])
+	case "ensure-registered":
+		return c.runEnsureRegistered(args[1:])
 	case "heartbeat":
 		return c.runHeartbeat(args[1:])
 	case "call":
@@ -58,6 +60,10 @@ func (c cli) run(args []string) error {
 		return c.runTaskGet(args[1:])
 	case "task-events":
 		return c.runTaskEvents(args[1:])
+	case "agents":
+		return c.runAgents(args[1:])
+	case "targets":
+		return c.runTargets(args[1:])
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -70,10 +76,14 @@ func (c cli) runRegister(args []string) error {
 	statePath := fs.String("state-file", defaultStatePath(), "local state file")
 	agentID := fs.String("agent-id", "", "explicit agent id")
 	displayName := fs.String("display-name", "", "agent display name")
-	runtimeKind := fs.String("runtime-kind", "", "runtime kind")
 	transportKind := fs.String("transport-kind", "local_managed", "transport kind")
 	endpoint := fs.String("endpoint", "", "agent endpoint")
-	runtimeID := fs.String("runtime-id", "", "runtime id")
+	adapter := fs.String("adapter", "", "runtime adapter kind")
+	dialect := fs.String("dialect", "", "runtime dialect")
+	healthcheck := fs.String("healthcheck", "", "runtime healthcheck URL")
+	launchMode := fs.String("launch-mode", "managed", "launch mode")
+	launchCommand := fs.String("launch-command", "", "launch command string")
+	defaults := fs.String("defaults", "", "comma-separated key=value runtime defaults")
 	capabilities := fs.String("capabilities", "", "comma-separated capabilities")
 	stickyMode := fs.String("sticky-mode", "", "sticky mode")
 	leaseTTL := fs.Int("lease-ttl-seconds", int(atypes.DefaultAgentLeaseTTL/time.Second), "lease ttl in seconds")
@@ -81,12 +91,18 @@ func (c cli) runRegister(args []string) error {
 		return err
 	}
 	req := atypes.AgentRegistrationRequest{
-		AgentID:         *agentID,
-		DisplayName:     *displayName,
-		RuntimeKind:     *runtimeKind,
-		TransportKind:   *transportKind,
-		Endpoint:        *endpoint,
-		RuntimeID:       *runtimeID,
+		AgentID:       *agentID,
+		DisplayName:   *displayName,
+		TransportKind: *transportKind,
+		Endpoint:      *endpoint,
+		Adapter:       *adapter,
+		Dialect:       *dialect,
+		Healthcheck:   *healthcheck,
+		Launch: atypes.LaunchSpec{
+			Mode:    atypes.LaunchMode(*launchMode),
+			Command: shellWords(*launchCommand),
+		},
+		Defaults:        parseKeyValueCSV(*defaults),
 		Capabilities:    csvList(*capabilities),
 		StickyMode:      *stickyMode,
 		LeaseTTLSeconds: *leaseTTL,
@@ -106,6 +122,53 @@ func (c cli) runRegister(args []string) error {
 	}
 	_, _ = fmt.Fprintln(c.stdout, string(body))
 	return nil
+}
+
+func (c cli) runEnsureRegistered(args []string) error {
+	fs := flag.NewFlagSet("ensure-registered", flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	statePath := fs.String("state-file", defaultStatePath(), "local state file")
+	displayName := fs.String("display-name", "", "agent display name")
+	transportKind := fs.String("transport-kind", "local_managed", "transport kind")
+	endpoint := fs.String("endpoint", "", "agent endpoint")
+	adapter := fs.String("adapter", "", "runtime adapter kind")
+	dialect := fs.String("dialect", "", "runtime dialect")
+	healthcheck := fs.String("healthcheck", "", "runtime healthcheck URL")
+	launchMode := fs.String("launch-mode", "managed", "launch mode")
+	launchCommand := fs.String("launch-command", "", "launch command string")
+	defaults := fs.String("defaults", "", "comma-separated key=value runtime defaults")
+	capabilities := fs.String("capabilities", "", "comma-separated capabilities")
+	stickyMode := fs.String("sticky-mode", "", "sticky mode")
+	leaseTTL := fs.Int("lease-ttl-seconds", int(atypes.DefaultAgentLeaseTTL/time.Second), "lease ttl in seconds")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	if state, err := loadAgentState(*statePath); err == nil && state.AgentID != "" {
+		body, err := c.get(joinURL(*server, "/v1/agents/"+state.AgentID))
+		if err == nil {
+			_, _ = fmt.Fprintln(c.stdout, string(body))
+			return nil
+		}
+	}
+
+	return c.runRegister([]string{
+		"--server", *server,
+		"--state-file", *statePath,
+		"--display-name", *displayName,
+		"--transport-kind", *transportKind,
+		"--endpoint", *endpoint,
+		"--adapter", *adapter,
+		"--dialect", *dialect,
+		"--healthcheck", *healthcheck,
+		"--launch-mode", *launchMode,
+		"--launch-command", *launchCommand,
+		"--defaults", *defaults,
+		"--capabilities", *capabilities,
+		"--sticky-mode", *stickyMode,
+		"--lease-ttl-seconds", fmt.Sprintf("%d", *leaseTTL),
+	})
 }
 
 func (c cli) runHeartbeat(args []string) error {
@@ -136,20 +199,26 @@ func (c cli) runCall(args []string) error {
 	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
 	statePath := fs.String("state-file", defaultStatePath(), "local state file")
 	agentID := fs.String("agent-id", "", "explicit agent id")
-	targetRuntime := fs.String("target-runtime", "", "target runtime")
+	targetAgentID := fs.String("target-agent-id", "", "target agent id")
 	intent := fs.String("intent", "", "task intent")
 	text := fs.String("text", "", "text payload")
 	conversationID := fs.String("conversation-id", "", "conversation id")
+	heartbeat := fs.Bool("heartbeat", false, "refresh agent lease before submitting")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	sender := "local"
 	if id, err := resolveAgentID(*agentID, *statePath); err == nil && id != "" {
 		sender = id
+		if *heartbeat {
+			if _, err := c.postJSON(joinURL(*server, "/v1/agents/"+id+"/heartbeat"), atypes.AgentHeartbeatRequest{}); err != nil {
+				return err
+			}
+		}
 	}
 	req := atypes.TaskCreateRequest{
 		Sender:         sender,
-		TargetRuntime:  *targetRuntime,
+		TargetAgentID:  *targetAgentID,
 		Intent:         *intent,
 		Payload:        map[string]any{"text": *text},
 		ConversationID: *conversationID,
@@ -187,6 +256,36 @@ func (c cli) runTaskEvents(args []string) error {
 		return err
 	}
 	body, err := c.get(joinURL(*server, "/v1/tasks/"+*taskID+"/events"))
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(c.stdout, string(body))
+	return nil
+}
+
+func (c cli) runAgents(args []string) error {
+	fs := flag.NewFlagSet("agents", flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	body, err := c.get(joinURL(*server, "/v1/agents"))
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(c.stdout, string(body))
+	return nil
+}
+
+func (c cli) runTargets(args []string) error {
+	fs := flag.NewFlagSet("targets", flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	body, err := c.get(joinURL(*server, "/v1/targets"))
 	if err != nil {
 		return err
 	}
@@ -292,6 +391,36 @@ func csvList(raw string) []string {
 		}
 	}
 	return out
+}
+
+func parseKeyValueCSV(raw string) map[string]any {
+	if strings.TrimSpace(raw) == "" {
+		return map[string]any{}
+	}
+	out := map[string]any{}
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		key, value, ok := strings.Cut(part, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" {
+			out[key] = value
+		}
+	}
+	return out
+}
+
+func shellWords(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	return strings.Fields(raw)
 }
 
 func joinURL(base, path string) string {

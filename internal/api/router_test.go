@@ -30,10 +30,9 @@ func setupServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
 	runtimeManager := runtime.NewManager(store)
 	agentService := agents.NewService(store)
 	registerTestAgent(t, agentService, atypes.AgentRegistrationRequest{
+		AgentID:       "mock_hermes",
 		DisplayName:   "mock-hermes",
-		RuntimeKind:   "hermes",
 		TransportKind: "local_managed",
-		RuntimeID:     "mock_hermes",
 		Adapter:       "mock_hermes",
 		Launch: atypes.LaunchSpec{Mode: atypes.LaunchModeManaged, Commands: map[string][]string{
 			"coder":    {"go", "run", root + "/cmd/fake-acp-client-agent"},
@@ -44,20 +43,18 @@ func setupServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
 		Capabilities: []string{"code.patch", "research.topic"},
 	})
 	registerTestAgent(t, agentService, atypes.AgentRegistrationRequest{
+		AgentID:       "mock_openclaw",
 		DisplayName:   "mock-openclaw",
-		RuntimeKind:   "openclaw",
 		TransportKind: "local_managed",
-		RuntimeID:     "mock_openclaw",
 		Adapter:       "mock_openclaw",
 		Launch:        atypes.LaunchSpec{Mode: atypes.LaunchModeOnDemand, Command: []string{"go", "run", root + "/cmd/fake-acp-client-agent"}},
 		Defaults:      map[string]any{"session_key": "main"},
 		Capabilities:  []string{"ui.review"},
 	})
 	registerTestAgent(t, agentService, atypes.AgentRegistrationRequest{
+		AgentID:       "mock_researcher_http",
 		DisplayName:   "mock-http",
-		RuntimeKind:   "http_acp",
 		TransportKind: "local_managed",
-		RuntimeID:     "mock_researcher_http",
 		Adapter:       "mock_acp_comm_http",
 		Endpoint:      "http://127.0.0.1:19102",
 		Healthcheck:   "http://127.0.0.1:19102/ping",
@@ -185,7 +182,7 @@ func TestAgentRegistrationHeartbeatAndList(t *testing.T) {
 	server, orchestrator := setupServer(t)
 	defer func() { _ = orchestrator.StopAllRuntimeProcesses(context.Background()) }()
 
-	registerBody := `{"display_name":"hermes-dev","runtime_kind":"hermes","transport_kind":"local_managed","runtime_id":"mock_hermes","capabilities":["code.patch"],"sticky_mode":"conversation"}`
+	registerBody := `{"display_name":"hermes-dev","transport_kind":"local_managed","capabilities":["code.patch"],"sticky_mode":"conversation"}`
 	resp, err := http.Post(server.URL+"/v1/agents/register", "application/json", strings.NewReader(registerBody))
 	if err != nil {
 		t.Fatalf("register agent: %v", err)
@@ -246,4 +243,65 @@ func TestAgentRegistrationHeartbeatAndList(t *testing.T) {
 	if !found {
 		t.Fatalf("expected newly registered agent to appear in list")
 	}
+}
+
+func TestOfflineTargetStillAppearsInTargetsAndCanLaunchOnDemand(t *testing.T) {
+	server, orchestrator := setupServer(t)
+	defer func() { _ = orchestrator.StopAllRuntimeProcesses(context.Background()) }()
+
+	unregisterReq, err := http.NewRequest(http.MethodPost, server.URL+"/v1/agents/mock_openclaw/unregister", nil)
+	if err != nil {
+		t.Fatalf("build unregister request: %v", err)
+	}
+	unregisterResp, err := http.DefaultClient.Do(unregisterReq)
+	if err != nil {
+		t.Fatalf("unregister target: %v", err)
+	}
+	_ = unregisterResp.Body.Close()
+
+	targetsResp, err := http.Get(server.URL + "/v1/targets")
+	if err != nil {
+		t.Fatalf("list targets: %v", err)
+	}
+	defer targetsResp.Body.Close()
+	var listed struct {
+		Targets []map[string]any `json:"targets"`
+	}
+	if err := json.NewDecoder(targetsResp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode targets response: %v", err)
+	}
+	found := false
+	for _, target := range listed.Targets {
+		if target["target_id"] == "mock_openclaw" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected offline target to remain visible in targets list")
+	}
+
+	payload := `{"target_agent_id":"mock_openclaw","intent":"ui.review","payload":{"mode":"success"}}`
+	createResp, err := http.Post(server.URL+"/v1/tasks", "application/json", strings.NewReader(payload))
+	if err != nil {
+		t.Fatalf("create task for offline target: %v", err)
+	}
+	defer createResp.Body.Close()
+	if createResp.StatusCode != http.StatusAccepted {
+		var body map[string]any
+		_ = json.NewDecoder(createResp.Body).Decode(&body)
+		t.Fatalf("expected accepted create response, got %d with body %#v", createResp.StatusCode, body)
+	}
+	var created struct {
+		Task struct {
+			TaskID string `json:"task_id"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.Task.TaskID == "" {
+		t.Fatalf("expected task id for offline target launch path")
+	}
+	_ = waitForStatus(t, server.URL, created.Task.TaskID, "completed")
 }

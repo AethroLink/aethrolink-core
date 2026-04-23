@@ -80,21 +80,21 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	stmts := []string{
 		`PRAGMA journal_mode=WAL;`,
 		`PRAGMA busy_timeout=5000;`,
-		`CREATE TABLE IF NOT EXISTS agents (agent_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, runtime_kind TEXT NOT NULL, transport_kind TEXT NOT NULL, endpoint TEXT, runtime_id TEXT, adapter_kind TEXT, dialect TEXT, healthcheck TEXT, launch_json TEXT NOT NULL, defaults_json TEXT NOT NULL, capabilities_json TEXT NOT NULL, sticky_mode TEXT, metadata_json TEXT NOT NULL, status TEXT NOT NULL, registered_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, lease_expires_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS agents (agent_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, transport_kind TEXT NOT NULL, endpoint TEXT, adapter_kind TEXT, dialect TEXT, healthcheck TEXT, launch_json TEXT NOT NULL, defaults_json TEXT NOT NULL, capabilities_json TEXT NOT NULL, sticky_mode TEXT, metadata_json TEXT NOT NULL, status TEXT NOT NULL, registered_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL, lease_expires_at TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_agents_status_lease ON agents(status, lease_expires_at)`,
-		`CREATE TABLE IF NOT EXISTS runtimes (runtime_id TEXT PRIMARY KEY, adapter_kind TEXT NOT NULL, spec_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS runtime_leases (lease_id TEXT PRIMARY KEY, runtime_id TEXT NOT NULL, subcontext_key TEXT, process_id TEXT, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, released_at TEXT)`,
-		`CREATE INDEX IF NOT EXISTS idx_runtime_leases_runtime_subcontext_released ON runtime_leases(runtime_id, subcontext_key, released_at)`,
-		`CREATE TABLE IF NOT EXISTS tasks (task_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, sender TEXT NOT NULL, intent TEXT NOT NULL, requested_runtime TEXT, resolved_runtime TEXT, runtime_options_json TEXT NOT NULL, payload_artifact_id TEXT, status TEXT NOT NULL, remote_binding TEXT, remote_execution_id TEXT, remote_session_id TEXT, last_error_json TEXT, result_artifact_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS runtimes (target_id TEXT PRIMARY KEY, adapter_kind TEXT NOT NULL, spec_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS runtime_leases (lease_id TEXT PRIMARY KEY, target_id TEXT NOT NULL, subcontext_key TEXT, process_id TEXT, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, released_at TEXT)`,
+		`CREATE INDEX IF NOT EXISTS idx_runtime_leases_target_subcontext_released ON runtime_leases(target_id, subcontext_key, released_at)`,
+		`CREATE TABLE IF NOT EXISTS tasks (task_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, sender TEXT NOT NULL, intent TEXT NOT NULL, requested_agent_id TEXT, resolved_agent_id TEXT, runtime_options_json TEXT NOT NULL, payload_artifact_id TEXT, status TEXT NOT NULL, remote_binding TEXT, remote_execution_id TEXT, remote_session_id TEXT, last_error_json TEXT, result_artifact_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
-		`CREATE INDEX IF NOT EXISTS idx_tasks_runtime_status ON tasks(resolved_runtime, status)`,
-		`CREATE TABLE IF NOT EXISTS session_bindings (runtime_id TEXT NOT NULL, subcontext_key TEXT NOT NULL, sticky_key TEXT NOT NULL, adapter TEXT NOT NULL, remote_session_id TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_used_at TEXT NOT NULL, last_activity_at TEXT NOT NULL, PRIMARY KEY(runtime_id, subcontext_key, sticky_key))`,
-		`CREATE INDEX IF NOT EXISTS idx_session_bindings_runtime_subcontext ON session_bindings(runtime_id, subcontext_key)`,
+		`CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(resolved_agent_id, status)`,
+		`CREATE TABLE IF NOT EXISTS session_bindings (target_id TEXT NOT NULL, subcontext_key TEXT NOT NULL, sticky_key TEXT NOT NULL, adapter TEXT NOT NULL, remote_session_id TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_used_at TEXT NOT NULL, last_activity_at TEXT NOT NULL, PRIMARY KEY(target_id, subcontext_key, sticky_key))`,
+		`CREATE INDEX IF NOT EXISTS idx_session_bindings_target_subcontext ON session_bindings(target_id, subcontext_key)`,
 		`CREATE TABLE IF NOT EXISTS task_events (event_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, source TEXT NOT NULL, message TEXT, data_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(task_id, seq))`,
 		`CREATE INDEX IF NOT EXISTS idx_task_events_task_seq ON task_events(task_id, seq)`,
 		`CREATE TABLE IF NOT EXISTS artifacts (artifact_id TEXT PRIMARY KEY, media_type TEXT NOT NULL, relative_path TEXT NOT NULL, size_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL)`,
-		`CREATE TABLE IF NOT EXISTS launch_history (launch_id TEXT PRIMARY KEY, runtime_id TEXT NOT NULL, subcontext_key TEXT, command_json TEXT NOT NULL, pid TEXT, status TEXT NOT NULL, error_text TEXT, started_at TEXT NOT NULL, ended_at TEXT)`,
+		`CREATE TABLE IF NOT EXISTS launch_history (launch_id TEXT PRIMARY KEY, target_id TEXT NOT NULL, subcontext_key TEXT, command_json TEXT NOT NULL, pid TEXT, status TEXT NOT NULL, error_text TEXT, started_at TEXT NOT NULL, ended_at TEXT)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
@@ -111,13 +111,13 @@ func (s *SQLiteStore) UpsertRuntime(ctx context.Context, spec atypes.RuntimeSpec
 	}
 	now := atypes.NowUTC().Format(time.RFC3339Nano)
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO runtimes(runtime_id, adapter_kind, spec_json, created_at, updated_at)
+		INSERT INTO runtimes(target_id, adapter_kind, spec_json, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?)
-		ON CONFLICT(runtime_id) DO UPDATE SET
+		ON CONFLICT(target_id) DO UPDATE SET
 			adapter_kind=excluded.adapter_kind,
 			spec_json=excluded.spec_json,
 			updated_at=excluded.updated_at
-	`, spec.RuntimeID, spec.Adapter, string(specJSON), now, now)
+	`, spec.TargetID, spec.Adapter, string(specJSON), now, now)
 	if err != nil {
 		return fmt.Errorf("upsert runtime: %w", err)
 	}
@@ -142,14 +142,12 @@ func (s *SQLiteStore) UpsertAgent(ctx context.Context, agent atypes.AgentRecord)
 		return fmt.Errorf("marshal agent metadata: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO agents(agent_id, display_name, runtime_kind, transport_kind, endpoint, runtime_id, adapter_kind, dialect, healthcheck, launch_json, defaults_json, capabilities_json, sticky_mode, metadata_json, status, registered_at, updated_at, last_seen_at, lease_expires_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO agents(agent_id, display_name, transport_kind, endpoint, adapter_kind, dialect, healthcheck, launch_json, defaults_json, capabilities_json, sticky_mode, metadata_json, status, registered_at, updated_at, last_seen_at, lease_expires_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(agent_id) DO UPDATE SET
 			display_name = excluded.display_name,
-			runtime_kind = excluded.runtime_kind,
 			transport_kind = excluded.transport_kind,
 			endpoint = excluded.endpoint,
-			runtime_id = excluded.runtime_id,
 			adapter_kind = excluded.adapter_kind,
 			dialect = excluded.dialect,
 			healthcheck = excluded.healthcheck,
@@ -162,7 +160,7 @@ func (s *SQLiteStore) UpsertAgent(ctx context.Context, agent atypes.AgentRecord)
 			updated_at = excluded.updated_at,
 			last_seen_at = excluded.last_seen_at,
 			lease_expires_at = excluded.lease_expires_at
-	`, agent.AgentID, agent.DisplayName, agent.RuntimeKind, agent.TransportKind, nullString(agent.Endpoint), nullString(agent.RuntimeID), nullString(agent.Adapter), nullString(agent.Dialect), nullString(agent.Healthcheck), string(launchJSON), string(defaultsJSON), string(capabilitiesJSON), nullString(agent.StickyMode), string(metadataJSON), string(agent.Status), agent.RegisteredAt.Format(time.RFC3339Nano), agent.UpdatedAt.Format(time.RFC3339Nano), agent.LastSeenAt.Format(time.RFC3339Nano), agent.LeaseExpiresAt.Format(time.RFC3339Nano))
+	`, agent.AgentID, agent.DisplayName, agent.TransportKind, nullString(agent.Endpoint), nullString(agent.Adapter), nullString(agent.Dialect), nullString(agent.Healthcheck), string(launchJSON), string(defaultsJSON), string(capabilitiesJSON), nullString(agent.StickyMode), string(metadataJSON), string(agent.Status), agent.RegisteredAt.Format(time.RFC3339Nano), agent.UpdatedAt.Format(time.RFC3339Nano), agent.LastSeenAt.Format(time.RFC3339Nano), agent.LeaseExpiresAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("upsert agent: %w", err)
 	}
@@ -171,7 +169,7 @@ func (s *SQLiteStore) UpsertAgent(ctx context.Context, agent atypes.AgentRecord)
 
 func (s *SQLiteStore) GetAgent(ctx context.Context, agentID string) (atypes.AgentRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT agent_id, display_name, runtime_kind, transport_kind, endpoint, runtime_id, adapter_kind, dialect, healthcheck, launch_json, defaults_json, capabilities_json, sticky_mode, metadata_json, status, registered_at, updated_at, last_seen_at, lease_expires_at
+		SELECT agent_id, display_name, transport_kind, endpoint, adapter_kind, dialect, healthcheck, launch_json, defaults_json, capabilities_json, sticky_mode, metadata_json, status, registered_at, updated_at, last_seen_at, lease_expires_at
 		FROM agents WHERE agent_id = ?
 	`, agentID)
 	return scanAgent(row)
@@ -179,7 +177,7 @@ func (s *SQLiteStore) GetAgent(ctx context.Context, agentID string) (atypes.Agen
 
 func (s *SQLiteStore) ListAgents(ctx context.Context) ([]atypes.AgentRecord, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT agent_id, display_name, runtime_kind, transport_kind, endpoint, runtime_id, adapter_kind, dialect, healthcheck, launch_json, defaults_json, capabilities_json, sticky_mode, metadata_json, status, registered_at, updated_at, last_seen_at, lease_expires_at
+		SELECT agent_id, display_name, transport_kind, endpoint, adapter_kind, dialect, healthcheck, launch_json, defaults_json, capabilities_json, sticky_mode, metadata_json, status, registered_at, updated_at, last_seen_at, lease_expires_at
 		FROM agents ORDER BY display_name ASC, agent_id ASC
 	`)
 	if err != nil {
@@ -290,9 +288,9 @@ func (s *SQLiteStore) InsertTask(ctx context.Context, task atypes.TaskRecord) er
 		lastErrorJSON = string(encoded)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO tasks(task_id, conversation_id, sender, intent, requested_runtime, resolved_runtime, runtime_options_json, payload_artifact_id, status, remote_binding, remote_execution_id, remote_session_id, last_error_json, result_artifact_id, created_at, updated_at)
+		INSERT INTO tasks(task_id, conversation_id, sender, intent, requested_agent_id, resolved_agent_id, runtime_options_json, payload_artifact_id, status, remote_binding, remote_execution_id, remote_session_id, last_error_json, result_artifact_id, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, task.TaskID, task.ConversationID, task.Sender, task.Intent, nullString(task.RequestedRuntime), nullString(task.ResolvedRuntime), string(runtimeOptionsJSON), nullString(task.PayloadArtifactID), string(task.Status), remoteBinding, remoteExecutionID, remoteSessionID, lastErrorJSON, nullString(task.ResultArtifactID), task.CreatedAt.Format(time.RFC3339Nano), task.UpdatedAt.Format(time.RFC3339Nano))
+	`, task.TaskID, task.ConversationID, task.Sender, task.Intent, nullString(task.RequestedAgentID), nullString(task.ResolvedAgentID), string(runtimeOptionsJSON), nullString(task.PayloadArtifactID), string(task.Status), remoteBinding, remoteExecutionID, remoteSessionID, lastErrorJSON, nullString(task.ResultArtifactID), task.CreatedAt.Format(time.RFC3339Nano), task.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
 	}
@@ -301,7 +299,7 @@ func (s *SQLiteStore) InsertTask(ctx context.Context, task atypes.TaskRecord) er
 
 func (s *SQLiteStore) GetTask(ctx context.Context, taskID string) (atypes.TaskRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT task_id, conversation_id, sender, intent, requested_runtime, resolved_runtime, runtime_options_json, payload_artifact_id, status, remote_binding, remote_execution_id, remote_session_id, last_error_json, result_artifact_id, created_at, updated_at
+		SELECT task_id, conversation_id, sender, intent, requested_agent_id, resolved_agent_id, runtime_options_json, payload_artifact_id, status, remote_binding, remote_execution_id, remote_session_id, last_error_json, result_artifact_id, created_at, updated_at
 		FROM tasks WHERE task_id = ?
 	`, taskID)
 	return scanTask(row)
@@ -456,35 +454,35 @@ func (s *SQLiteStore) UpsertSessionBinding(ctx context.Context, binding atypes.S
 		return fmt.Errorf("marshal session binding metadata: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO session_bindings(runtime_id, subcontext_key, sticky_key, adapter, remote_session_id, metadata_json, created_at, updated_at, last_used_at, last_activity_at)
+		INSERT INTO session_bindings(target_id, subcontext_key, sticky_key, adapter, remote_session_id, metadata_json, created_at, updated_at, last_used_at, last_activity_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(runtime_id, subcontext_key, sticky_key) DO UPDATE SET
+		ON CONFLICT(target_id, subcontext_key, sticky_key) DO UPDATE SET
 			adapter = excluded.adapter,
 			remote_session_id = excluded.remote_session_id,
 			metadata_json = excluded.metadata_json,
 			updated_at = excluded.updated_at,
 			last_used_at = excluded.last_used_at,
 			last_activity_at = excluded.last_activity_at
-	`, binding.RuntimeID, binding.SubcontextKey, binding.StickyKey, binding.Adapter, binding.RemoteSessionID, string(metadataJSON), binding.CreatedAt.Format(time.RFC3339Nano), binding.UpdatedAt.Format(time.RFC3339Nano), binding.LastUsedAt.Format(time.RFC3339Nano), binding.LastActivityAt.Format(time.RFC3339Nano))
+	`, binding.TargetID, binding.SubcontextKey, binding.StickyKey, binding.Adapter, binding.RemoteSessionID, string(metadataJSON), binding.CreatedAt.Format(time.RFC3339Nano), binding.UpdatedAt.Format(time.RFC3339Nano), binding.LastUsedAt.Format(time.RFC3339Nano), binding.LastActivityAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("upsert session binding: %w", err)
 	}
 	return nil
 }
 
-func (s *SQLiteStore) GetSessionBinding(ctx context.Context, runtimeID, subcontextKey, stickyKey string) (atypes.SessionBinding, error) {
+func (s *SQLiteStore) GetSessionBinding(ctx context.Context, targetID, subcontextKey, stickyKey string) (atypes.SessionBinding, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT runtime_id, subcontext_key, sticky_key, adapter, remote_session_id, metadata_json, created_at, updated_at, last_used_at, last_activity_at
-		FROM session_bindings WHERE runtime_id = ? AND subcontext_key = ? AND sticky_key = ?
-	`, runtimeID, subcontextKey, stickyKey)
+		SELECT target_id, subcontext_key, sticky_key, adapter, remote_session_id, metadata_json, created_at, updated_at, last_used_at, last_activity_at
+		FROM session_bindings WHERE target_id = ? AND subcontext_key = ? AND sticky_key = ?
+	`, targetID, subcontextKey, stickyKey)
 	return scanSessionBinding(row)
 }
 
-func (s *SQLiteStore) TouchSessionBindingActivity(ctx context.Context, runtimeID, subcontextKey, stickyKey string, touchedAt time.Time) error {
+func (s *SQLiteStore) TouchSessionBindingActivity(ctx context.Context, targetID, subcontextKey, stickyKey string, touchedAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE session_bindings SET updated_at = ?, last_activity_at = ?
-		WHERE runtime_id = ? AND subcontext_key = ? AND sticky_key = ?
-	`, touchedAt.Format(time.RFC3339Nano), touchedAt.Format(time.RFC3339Nano), runtimeID, subcontextKey, stickyKey)
+		WHERE target_id = ? AND subcontext_key = ? AND sticky_key = ?
+	`, touchedAt.Format(time.RFC3339Nano), touchedAt.Format(time.RFC3339Nano), targetID, subcontextKey, stickyKey)
 	if err != nil {
 		return fmt.Errorf("touch session binding activity: %w", err)
 	}
@@ -501,9 +499,9 @@ func (s *SQLiteStore) InsertLease(ctx context.Context, lease atypes.RuntimeLease
 		releasedAt = lease.ReleasedAt.Format(time.RFC3339Nano)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO runtime_leases(lease_id, runtime_id, subcontext_key, process_id, metadata_json, created_at, released_at)
+		INSERT INTO runtime_leases(lease_id, target_id, subcontext_key, process_id, metadata_json, created_at, released_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?)
-	`, lease.LeaseID, lease.RuntimeID, nullString(lease.SubcontextKey), nullString(lease.ProcessID), string(metadataJSON), lease.CreatedAt.Format(time.RFC3339Nano), releasedAt)
+	`, lease.LeaseID, lease.TargetID, nullString(lease.SubcontextKey), nullString(lease.ProcessID), string(metadataJSON), lease.CreatedAt.Format(time.RFC3339Nano), releasedAt)
 	if err != nil {
 		return fmt.Errorf("insert lease: %w", err)
 	}
@@ -518,16 +516,16 @@ func (s *SQLiteStore) ReleaseLease(ctx context.Context, leaseID string) error {
 	return nil
 }
 
-func (s *SQLiteStore) InsertLaunchHistory(ctx context.Context, runtimeID, subcontextKey string, command []string, pid, status, errorText string) (string, error) {
+func (s *SQLiteStore) InsertLaunchHistory(ctx context.Context, targetID, subcontextKey string, command []string, pid, status, errorText string) (string, error) {
 	launchID := atypes.NewID()
 	commandJSON, err := json.Marshal(command)
 	if err != nil {
 		return "", fmt.Errorf("marshal launch command: %w", err)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO launch_history(launch_id, runtime_id, subcontext_key, command_json, pid, status, error_text, started_at, ended_at)
+		INSERT INTO launch_history(launch_id, target_id, subcontext_key, command_json, pid, status, error_text, started_at, ended_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, NULL)
-	`, launchID, runtimeID, nullString(subcontextKey), string(commandJSON), nullString(pid), status, nullString(errorText), atypes.NowUTC().Format(time.RFC3339Nano))
+	`, launchID, targetID, nullString(subcontextKey), string(commandJSON), nullString(pid), status, nullString(errorText), atypes.NowUTC().Format(time.RFC3339Nano))
 	if err != nil {
 		return "", fmt.Errorf("insert launch history: %w", err)
 	}
@@ -548,8 +546,8 @@ func scanTask(scanner interface{ Scan(dest ...any) error }) (atypes.TaskRecord, 
 	var (
 		task               atypes.TaskRecord
 		runtimeOptionsJSON string
-		requestedRuntime   sql.NullString
-		resolvedRuntime    sql.NullString
+		requestedAgentID   sql.NullString
+		resolvedAgentID    sql.NullString
 		payloadArtifactID  sql.NullString
 		status             string
 		remoteBinding      sql.NullString
@@ -560,14 +558,14 @@ func scanTask(scanner interface{ Scan(dest ...any) error }) (atypes.TaskRecord, 
 		createdAt          string
 		updatedAt          string
 	)
-	if err := scanner.Scan(&task.TaskID, &task.ConversationID, &task.Sender, &task.Intent, &requestedRuntime, &resolvedRuntime, &runtimeOptionsJSON, &payloadArtifactID, &status, &remoteBinding, &remoteExecutionID, &remoteSessionID, &lastErrorJSON, &resultArtifactID, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&task.TaskID, &task.ConversationID, &task.Sender, &task.Intent, &requestedAgentID, &resolvedAgentID, &runtimeOptionsJSON, &payloadArtifactID, &status, &remoteBinding, &remoteExecutionID, &remoteSessionID, &lastErrorJSON, &resultArtifactID, &createdAt, &updatedAt); err != nil {
 		return atypes.TaskRecord{}, err
 	}
 	if err := json.Unmarshal([]byte(runtimeOptionsJSON), &task.RuntimeOptions); err != nil {
 		return atypes.TaskRecord{}, fmt.Errorf("unmarshal runtime options: %w", err)
 	}
-	task.RequestedRuntime = requestedRuntime.String
-	task.ResolvedRuntime = resolvedRuntime.String
+	task.RequestedAgentID = requestedAgentID.String
+	task.ResolvedAgentID = resolvedAgentID.String
 	task.PayloadArtifactID = payloadArtifactID.String
 	task.Status = atypes.TaskStatus(status)
 	if remoteBinding.Valid {
@@ -623,7 +621,7 @@ func scanSessionBinding(scanner interface{ Scan(dest ...any) error }) (atypes.Se
 		lastUsedAt     string
 		lastActivityAt string
 	)
-	if err := scanner.Scan(&binding.RuntimeID, &binding.SubcontextKey, &binding.StickyKey, &binding.Adapter, &binding.RemoteSessionID, &metadataJSON, &createdAt, &updatedAt, &lastUsedAt, &lastActivityAt); err != nil {
+	if err := scanner.Scan(&binding.TargetID, &binding.SubcontextKey, &binding.StickyKey, &binding.Adapter, &binding.RemoteSessionID, &metadataJSON, &createdAt, &updatedAt, &lastUsedAt, &lastActivityAt); err != nil {
 		return atypes.SessionBinding{}, err
 	}
 	if err := json.Unmarshal([]byte(metadataJSON), &binding.Metadata); err != nil {
@@ -653,7 +651,6 @@ func scanAgent(scanner interface{ Scan(dest ...any) error }) (atypes.AgentRecord
 	var (
 		agent            atypes.AgentRecord
 		endpoint         sql.NullString
-		runtimeID        sql.NullString
 		adapterKind      sql.NullString
 		dialect          sql.NullString
 		healthcheck      sql.NullString
@@ -668,11 +665,10 @@ func scanAgent(scanner interface{ Scan(dest ...any) error }) (atypes.AgentRecord
 		lastSeenAt       string
 		leaseExpiresAt   string
 	)
-	if err := scanner.Scan(&agent.AgentID, &agent.DisplayName, &agent.RuntimeKind, &agent.TransportKind, &endpoint, &runtimeID, &adapterKind, &dialect, &healthcheck, &launchJSON, &defaultsJSON, &capabilitiesJSON, &stickyMode, &metadataJSON, &status, &registeredAt, &updatedAt, &lastSeenAt, &leaseExpiresAt); err != nil {
+	if err := scanner.Scan(&agent.AgentID, &agent.DisplayName, &agent.TransportKind, &endpoint, &adapterKind, &dialect, &healthcheck, &launchJSON, &defaultsJSON, &capabilitiesJSON, &stickyMode, &metadataJSON, &status, &registeredAt, &updatedAt, &lastSeenAt, &leaseExpiresAt); err != nil {
 		return atypes.AgentRecord{}, err
 	}
 	agent.Endpoint = endpoint.String
-	agent.RuntimeID = runtimeID.String
 	agent.Adapter = adapterKind.String
 	agent.Dialect = dialect.String
 	agent.Healthcheck = healthcheck.String

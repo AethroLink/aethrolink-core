@@ -14,12 +14,12 @@ import (
 )
 
 var (
-	ErrRuntimeNotFound            = errors.New("runtime not found")
-	ErrRouteNotFound              = errors.New("route not found")
-	ErrRouteAmbiguous             = errors.New("routing conflict")
-	ErrRuntimeCannotSatisfyIntent = errors.New("runtime cannot satisfy intent")
-	ErrTaskNotFound               = errors.New("task not found")
-	ErrTaskNotAwaitable           = errors.New("task not awaitable")
+	ErrTargetAgentNotFound       = errors.New("target agent not found")
+	ErrRouteNotFound             = errors.New("route not found")
+	ErrRouteAmbiguous            = errors.New("routing conflict")
+	ErrTargetCannotSatisfyIntent = errors.New("target agent cannot satisfy intent")
+	ErrTaskNotFound              = errors.New("task not found")
+	ErrTaskNotAwaitable          = errors.New("task not awaitable")
 )
 
 type subscriber struct {
@@ -78,15 +78,15 @@ func (o *Orchestrator) routeRequest(ctx context.Context, req atypes.TaskCreateRe
 	if err := atypes.ValidateIntent(req.Intent); err != nil {
 		return "", nil, err
 	}
-	if req.TargetRuntime != "" {
-		spec, err := o.discovery.ResolveRuntime(ctx, req.TargetRuntime)
+	if req.TargetAgentID != "" {
+		spec, err := o.discovery.ResolveRuntime(ctx, req.TargetAgentID)
 		if err != nil {
-			return "", nil, ErrRuntimeNotFound
+			return "", nil, ErrTargetAgentNotFound
 		}
 		if !supportsIntent(spec, req.Intent) {
-			return "", nil, ErrRuntimeCannotSatisfyIntent
+			return "", nil, ErrTargetCannotSatisfyIntent
 		}
-		return req.TargetRuntime, mergeMaps(spec.Defaults, req.RuntimeOptions), nil
+		return req.TargetAgentID, mergeMaps(spec.Defaults, req.RuntimeOptions), nil
 	}
 	runtimes, err := o.discovery.ListRuntimes(ctx)
 	if err != nil {
@@ -102,7 +102,7 @@ func (o *Orchestrator) routeRequest(ctx context.Context, req atypes.TaskCreateRe
 	case 0:
 		return "", nil, ErrRouteNotFound
 	case 1:
-		return matches[0].RuntimeID, mergeMaps(matches[0].Defaults, req.RuntimeOptions), nil
+		return matches[0].TargetID, mergeMaps(matches[0].Defaults, req.RuntimeOptions), nil
 	default:
 		return "", nil, ErrRouteAmbiguous
 	}
@@ -157,14 +157,14 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 		return atypes.TaskRecord{}, err
 	}
 	now := atypes.NowUTC()
-	task := atypes.TaskRecord{TaskID: atypes.NewID(), ConversationID: req.ConversationID, Sender: req.Sender, Intent: req.Intent, RequestedRuntime: req.TargetRuntime, ResolvedRuntime: resolvedRuntime, RuntimeOptions: cloneMap(runtimeOptions), PayloadArtifactID: payloadArtifact.ArtifactID, Status: atypes.TaskStatusCreated, CreatedAt: now, UpdatedAt: now}
+	task := atypes.TaskRecord{TaskID: atypes.NewID(), ConversationID: req.ConversationID, Sender: req.Sender, Intent: req.Intent, RequestedAgentID: req.TargetAgentID, ResolvedAgentID: resolvedRuntime, RuntimeOptions: cloneMap(runtimeOptions), PayloadArtifactID: payloadArtifact.ArtifactID, Status: atypes.TaskStatusCreated, CreatedAt: now, UpdatedAt: now}
 	if err := o.store.InsertTask(ctx, task); err != nil {
 		return atypes.TaskRecord{}, err
 	}
 	if _, err := o.appendEvent(ctx, task.TaskID, atypes.TaskEventTaskCreated, atypes.TaskStatusCreated, atypes.EventSourceCore, "Task created", map[string]any{}, nil, nil, ""); err != nil {
 		return atypes.TaskRecord{}, err
 	}
-	if _, err := o.appendEvent(ctx, task.TaskID, atypes.TaskEventTaskRouted, atypes.TaskStatusCreated, atypes.EventSourceCore, "Route resolved", map[string]any{"resolved_runtime": resolvedRuntime, "runtime_options": runtimeOptions}, nil, nil, ""); err != nil {
+	if _, err := o.appendEvent(ctx, task.TaskID, atypes.TaskEventTaskRouted, atypes.TaskStatusCreated, atypes.EventSourceCore, "Route resolved", map[string]any{"resolved_agent_id": resolvedRuntime, "runtime_options": runtimeOptions}, nil, nil, ""); err != nil {
 		return atypes.TaskRecord{}, err
 	}
 	go o.runTask(task.TaskID, *req.Delivery, cloneMap(req.Payload))
@@ -174,17 +174,17 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 // rehydrateRemoteHandle asks the adapter to rebuild any adapter-private
 // handle state from the persisted task record.
 func (o *Orchestrator) rehydrateRemoteHandle(task atypes.TaskRecord) atypes.RemoteHandle {
-	spec, err := o.discovery.ResolveRuntime(context.Background(), task.ResolvedRuntime)
+	spec, err := o.discovery.ResolveRuntime(context.Background(), task.ResolvedAgentID)
 	if err != nil {
-		return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+		return atypes.RemoteHandle{TaskID: task.TaskID, TargetID: task.ResolvedAgentID}
 	}
 	adapter, ok := o.adapters.Get(spec.Adapter)
 	if !ok {
-		return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+		return atypes.RemoteHandle{TaskID: task.TaskID, TargetID: task.ResolvedAgentID}
 	}
 	handle, err := adapter.RehydrateHandle(task, spec)
 	if err != nil {
-		return atypes.RemoteHandle{TaskID: task.TaskID, RuntimeID: task.ResolvedRuntime}
+		return atypes.RemoteHandle{TaskID: task.TaskID, TargetID: task.ResolvedAgentID}
 	}
 	return handle
 }
@@ -197,7 +197,7 @@ func (o *Orchestrator) runTask(taskID string, delivery atypes.DeliveryPolicy, pa
 	if err != nil {
 		return
 	}
-	spec, err := o.discovery.ResolveRuntime(ctx, task.ResolvedRuntime)
+	spec, err := o.discovery.ResolveRuntime(ctx, task.ResolvedAgentID)
 	if err != nil {
 		return
 	}
@@ -207,11 +207,11 @@ func (o *Orchestrator) runTask(taskID string, delivery atypes.DeliveryPolicy, pa
 		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceCore, taskErr.Reason, map[string]any{"detail": taskErr.Detail}, nil, taskErr, "")
 		return
 	}
-	health, _ := adapter.Health(ctx, task.ResolvedRuntime, task.RuntimeOptions)
+	health, _ := adapter.Health(ctx, task.ResolvedAgentID, task.RuntimeOptions)
 	healthy, _ := health["healthy"].(bool)
 	var lease atypes.RuntimeLease
 	if healthy {
-		lease, err = adapter.EnsureReady(ctx, task.ResolvedRuntime, task.RuntimeOptions)
+		lease, err = adapter.EnsureReady(ctx, task.ResolvedAgentID, task.RuntimeOptions)
 		if err != nil {
 			taskErr := &atypes.TaskError{Reason: "ensure_ready_failed", Detail: err.Error()}
 			_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceRuntime, taskErr.Reason, map[string]any{"detail": taskErr.Detail}, nil, taskErr, "")
@@ -221,7 +221,7 @@ func (o *Orchestrator) runTask(taskID string, delivery atypes.DeliveryPolicy, pa
 	} else if delivery.LaunchIfDown {
 		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventRuntimePendingLaunch, atypes.TaskStatusPendingLaunch, atypes.EventSourceCore, "Runtime launch required", map[string]any{}, nil, nil, "")
 		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventRuntimeLaunching, atypes.TaskStatusLaunching, atypes.EventSourceRuntime, "Launching runtime", map[string]any{}, nil, nil, "")
-		lease, err = adapter.EnsureReady(ctx, task.ResolvedRuntime, task.RuntimeOptions)
+		lease, err = adapter.EnsureReady(ctx, task.ResolvedAgentID, task.RuntimeOptions)
 		if err != nil {
 			taskErr := &atypes.TaskError{Reason: "launch_failed", Detail: err.Error()}
 			_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceRuntime, taskErr.Reason, map[string]any{"detail": taskErr.Detail}, nil, taskErr, "")
@@ -233,8 +233,8 @@ func (o *Orchestrator) runTask(taskID string, delivery atypes.DeliveryPolicy, pa
 		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceRuntime, taskErr.Reason, map[string]any{"detail": taskErr.Detail}, nil, taskErr, "")
 		return
 	}
-	_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskDispatching, atypes.TaskStatusDispatching, atypes.EventSourceCore, "Dispatching task", map[string]any{"runtime_id": task.ResolvedRuntime}, nil, nil, "")
-	envelope := atypes.TaskEnvelope{TaskID: task.TaskID, ConversationID: task.ConversationID, Sender: task.Sender, TargetRuntime: task.ResolvedRuntime, Intent: task.Intent, Payload: payload, RuntimeOptions: task.RuntimeOptions, Delivery: delivery, Trace: atypes.DefaultTraceContext(), Metadata: map[string]any{}}
+	_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskDispatching, atypes.TaskStatusDispatching, atypes.EventSourceCore, "Dispatching task", map[string]any{"target_agent_id": task.ResolvedAgentID}, nil, nil, "")
+	envelope := atypes.TaskEnvelope{TaskID: task.TaskID, ConversationID: task.ConversationID, Sender: task.Sender, TargetAgentID: task.ResolvedAgentID, Intent: task.Intent, Payload: payload, RuntimeOptions: task.RuntimeOptions, Delivery: delivery, Trace: atypes.DefaultTraceContext(), Metadata: map[string]any{}}
 	handle, err := adapter.Submit(ctx, envelope, lease)
 	if err != nil {
 		taskErr := &atypes.TaskError{Reason: "submit_failed", Detail: err.Error()}
@@ -319,9 +319,9 @@ func (o *Orchestrator) ResumeTask(ctx context.Context, taskID string, payload ma
 	if task.Status != atypes.TaskStatusAwaitingInput {
 		return atypes.TaskRecord{}, ErrTaskNotAwaitable
 	}
-	spec, err := o.discovery.ResolveRuntime(ctx, task.ResolvedRuntime)
+	spec, err := o.discovery.ResolveRuntime(ctx, task.ResolvedAgentID)
 	if err != nil {
-		return atypes.TaskRecord{}, ErrRuntimeNotFound
+		return atypes.TaskRecord{}, ErrTargetAgentNotFound
 	}
 	adapter, ok := o.adapters.Get(spec.Adapter)
 	if !ok {
@@ -343,9 +343,9 @@ func (o *Orchestrator) CancelTask(ctx context.Context, taskID, reason string) (a
 	if task.Status.IsTerminal() {
 		return task, nil
 	}
-	spec, err := o.discovery.ResolveRuntime(ctx, task.ResolvedRuntime)
+	spec, err := o.discovery.ResolveRuntime(ctx, task.ResolvedAgentID)
 	if err != nil {
-		return atypes.TaskRecord{}, ErrRuntimeNotFound
+		return atypes.TaskRecord{}, ErrTargetAgentNotFound
 	}
 	adapter, ok := o.adapters.Get(spec.Adapter)
 	if !ok {
@@ -363,42 +363,42 @@ func (o *Orchestrator) CancelTask(ctx context.Context, taskID, reason string) (a
 	return o.GetTask(ctx, taskID)
 }
 
-func (o *Orchestrator) ListRuntimes(ctx context.Context) ([]atypes.RuntimeSpec, error) {
+func (o *Orchestrator) ListTargets(ctx context.Context) ([]atypes.RuntimeSpec, error) {
 	return o.discovery.ListRuntimes(ctx)
 }
 
-func (o *Orchestrator) RuntimeHealth(ctx context.Context, runtimeID string) (map[string]any, error) {
-	spec, err := o.discovery.ResolveRuntime(ctx, runtimeID)
+func (o *Orchestrator) TargetHealth(ctx context.Context, agentID string) (map[string]any, error) {
+	spec, err := o.discovery.ResolveRuntime(ctx, agentID)
 	if err != nil {
-		return nil, ErrRuntimeNotFound
+		return nil, ErrTargetAgentNotFound
 	}
 	adapter, ok := o.adapters.Get(spec.Adapter)
 	if !ok {
 		return nil, fmt.Errorf("adapter missing")
 	}
-	return adapter.Health(ctx, runtimeID, spec.Defaults)
+	return adapter.Health(ctx, agentID, spec.Defaults)
 }
 
-func (o *Orchestrator) StartRuntime(ctx context.Context, runtimeID string, runtimeOptions map[string]any) (map[string]any, error) {
-	spec, err := o.discovery.ResolveRuntime(ctx, runtimeID)
+func (o *Orchestrator) StartTarget(ctx context.Context, agentID string, runtimeOptions map[string]any) (map[string]any, error) {
+	spec, err := o.discovery.ResolveRuntime(ctx, agentID)
 	if err != nil {
-		return nil, ErrRuntimeNotFound
+		return nil, ErrTargetAgentNotFound
 	}
 	adapter, ok := o.adapters.Get(spec.Adapter)
 	if !ok {
 		return nil, fmt.Errorf("adapter missing")
 	}
-	lease, err := adapter.EnsureReady(ctx, runtimeID, mergeMaps(spec.Defaults, runtimeOptions))
+	lease, err := adapter.EnsureReady(ctx, agentID, mergeMaps(spec.Defaults, runtimeOptions))
 	if err != nil {
 		return nil, err
 	}
-	return map[string]any{"runtime_id": runtimeID, "healthy": true, "lease_id": lease.LeaseID, "process_id": lease.ProcessID, "runtime_options": cloneMap(runtimeOptions)}, nil
+	return map[string]any{"target_agent_id": agentID, "healthy": true, "lease_id": lease.LeaseID, "process_id": lease.ProcessID, "runtime_options": cloneMap(runtimeOptions)}, nil
 }
 
-func (o *Orchestrator) StopRuntime(ctx context.Context, runtimeID string, runtimeOptions map[string]any) (map[string]any, error) {
-	spec, err := o.discovery.ResolveRuntime(ctx, runtimeID)
+func (o *Orchestrator) StopTarget(ctx context.Context, agentID string, runtimeOptions map[string]any) (map[string]any, error) {
+	spec, err := o.discovery.ResolveRuntime(ctx, agentID)
 	if err != nil {
-		return nil, ErrRuntimeNotFound
+		return nil, ErrTargetAgentNotFound
 	}
 	adapter, ok := o.adapters.Get(spec.Adapter)
 	if !ok {
@@ -406,10 +406,10 @@ func (o *Orchestrator) StopRuntime(ctx context.Context, runtimeID string, runtim
 	}
 	merged := mergeMaps(spec.Defaults, runtimeOptions)
 	subcontext := adapter.SubcontextKey(spec, merged)
-	if err := o.runtime.Stop(ctx, runtimeID, subcontext); err != nil {
+	if err := o.runtime.Stop(ctx, agentID, subcontext); err != nil {
 		return nil, err
 	}
-	return map[string]any{"runtime_id": runtimeID, "healthy": false, "runtime_options": cloneMap(runtimeOptions)}, nil
+	return map[string]any{"target_agent_id": agentID, "healthy": false, "runtime_options": cloneMap(runtimeOptions)}, nil
 }
 
 func (o *Orchestrator) StopAllRuntimeProcesses(ctx context.Context) error {
@@ -430,11 +430,11 @@ func asString(m map[string]any, key string) string {
 
 func ErrorStatus(err error) int {
 	switch {
-	case errors.Is(err, ErrTaskNotFound), errors.Is(err, ErrRuntimeNotFound), errors.Is(err, ErrRouteNotFound):
+	case errors.Is(err, ErrTaskNotFound), errors.Is(err, ErrTargetAgentNotFound), errors.Is(err, ErrRouteNotFound):
 		return 404
 	case errors.Is(err, ErrRouteAmbiguous):
 		return 409
-	case errors.Is(err, ErrRuntimeCannotSatisfyIntent), errors.Is(err, ErrTaskNotAwaitable):
+	case errors.Is(err, ErrTargetCannotSatisfyIntent), errors.Is(err, ErrTaskNotAwaitable):
 		return 422
 	default:
 		return 400

@@ -43,18 +43,18 @@ type LocalRuntimeEvent struct {
 type LocalRuntimeHost interface {
 	EnsureRunning(ctx context.Context, spec RuntimeSpec, subcontextKey string) (RuntimeLease, error)
 	Health(ctx context.Context, spec RuntimeSpec, subcontextKey string) (map[string]any, error)
-	Stop(ctx context.Context, runtimeID string, subcontextKey string) error
+	Stop(ctx context.Context, targetID string, subcontextKey string) error
 }
 
 // LocalSessionTransport owns wire-level session operations for local runtimes.
 type LocalSessionTransport interface {
-	Initialize(ctx context.Context, runtimeID, subcontextKey string, payload map[string]any, timeout time.Duration) error
-	OpenSession(ctx context.Context, runtimeID, subcontextKey string, payload map[string]any, timeout time.Duration) (string, error)
-	LoadSession(ctx context.Context, runtimeID, subcontextKey string, sessionID string, payload map[string]any, timeout time.Duration) (string, error)
-	Prompt(ctx context.Context, runtimeID, subcontextKey string, sessionID string, payload map[string]any, timeout time.Duration) error
-	Resume(ctx context.Context, runtimeID, subcontextKey string, sessionID string, payload map[string]any) error
-	Cancel(ctx context.Context, runtimeID, subcontextKey string, sessionID string) error
-	Stream(ctx context.Context, runtimeID, subcontextKey string) (<-chan map[string]any, func(), error)
+	Initialize(ctx context.Context, targetID, subcontextKey string, payload map[string]any, timeout time.Duration) error
+	OpenSession(ctx context.Context, targetID, subcontextKey string, payload map[string]any, timeout time.Duration) (string, error)
+	LoadSession(ctx context.Context, targetID, subcontextKey string, sessionID string, payload map[string]any, timeout time.Duration) (string, error)
+	Prompt(ctx context.Context, targetID, subcontextKey string, sessionID string, payload map[string]any, timeout time.Duration) error
+	Resume(ctx context.Context, targetID, subcontextKey string, sessionID string, payload map[string]any) error
+	Cancel(ctx context.Context, targetID, subcontextKey string, sessionID string) error
+	Stream(ctx context.Context, targetID, subcontextKey string) (<-chan map[string]any, func(), error)
 }
 
 // LocalRuntimeDialect owns runtime-specific scoping, workspace binding, request
