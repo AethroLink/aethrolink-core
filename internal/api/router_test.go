@@ -69,7 +69,11 @@ func setupServerAtRoot(t *testing.T, tmp string) (*httptest.Server, *core.Orches
 	})
 	adapterRegistry := adapters.NewRegistry()
 	mockadapters.RegisterAll(adapterRegistry, agentService, runtimeManager)
-	orchestrator := core.NewOrchestrator(agentService, store, runtimeManager, adapterRegistry)
+	orchestrator, err := core.NewOrchestrator(agentService, store, runtimeManager, adapterRegistry)
+	if err != nil {
+		_ = store.Close()
+		t.Fatalf("create orchestrator: %v", err)
+	}
 	server := httptest.NewServer(NewServer(orchestrator, agentService))
 	cleanup := func() {
 		_ = orchestrator.StopAllRuntimeProcesses(context.Background())
