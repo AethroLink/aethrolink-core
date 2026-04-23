@@ -383,3 +383,52 @@ func TestSQLiteStoreAssignsNextThreadTurnIndexInsideMutationTransaction(t *testi
 		t.Fatalf("expected transactional turn indices 1 then 2, got %#v", turns)
 	}
 }
+
+func TestSQLiteStoreMigrateAddsThreadColumnBeforeCreatingTaskThreadIndex(t *testing.T) {
+	tmp := t.TempDir()
+	databasePath := filepath.Join(tmp, "legacy.db")
+	artifactPath := filepath.Join(tmp, "artifacts")
+	legacyStore, err := Open(databasePath, artifactPath, "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("open store for legacy bootstrap: %v", err)
+	}
+	if _, err := legacyStore.db.Exec(`DROP INDEX IF EXISTS idx_tasks_thread`); err != nil {
+		t.Fatalf("drop modern task-thread index: %v", err)
+	}
+	if _, err := legacyStore.db.Exec(`CREATE TABLE tasks_legacy (task_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, sender TEXT NOT NULL, intent TEXT NOT NULL, requested_agent_id TEXT, resolved_agent_id TEXT, runtime_options_json TEXT NOT NULL, payload_artifact_id TEXT, status TEXT NOT NULL, remote_binding TEXT, remote_execution_id TEXT, remote_session_id TEXT, last_error_json TEXT, result_artifact_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`); err != nil {
+		t.Fatalf("create legacy tasks shadow table: %v", err)
+	}
+	if _, err := legacyStore.db.Exec(`INSERT INTO tasks_legacy(task_id, conversation_id, sender, intent, requested_agent_id, resolved_agent_id, runtime_options_json, payload_artifact_id, status, remote_binding, remote_execution_id, remote_session_id, last_error_json, result_artifact_id, created_at, updated_at) SELECT task_id, conversation_id, sender, intent, requested_agent_id, resolved_agent_id, runtime_options_json, payload_artifact_id, status, remote_binding, remote_execution_id, remote_session_id, last_error_json, result_artifact_id, created_at, updated_at FROM tasks`); err != nil {
+		t.Fatalf("copy tasks into legacy shape: %v", err)
+	}
+	if _, err := legacyStore.db.Exec(`DROP TABLE tasks`); err != nil {
+		t.Fatalf("drop modern tasks table: %v", err)
+	}
+	if _, err := legacyStore.db.Exec(`ALTER TABLE tasks_legacy RENAME TO tasks`); err != nil {
+		t.Fatalf("rename legacy tasks table: %v", err)
+	}
+	if err := legacyStore.Close(); err != nil {
+		t.Fatalf("close legacy store: %v", err)
+	}
+
+	upgradedStore, err := Open(databasePath, artifactPath, "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("reopen legacy store with migration: %v", err)
+	}
+	defer upgradedStore.Close()
+
+	var threadColumnCount int
+	if err := upgradedStore.db.QueryRow(`SELECT COUNT(*) FROM pragma_table_info('tasks') WHERE name = 'thread_id'`).Scan(&threadColumnCount); err != nil {
+		t.Fatalf("inspect migrated tasks columns: %v", err)
+	}
+	if threadColumnCount != 1 {
+		t.Fatalf("expected migrated tasks table to contain thread_id once, got %d", threadColumnCount)
+	}
+	var threadIndexCount int
+	if err := upgradedStore.db.QueryRow(`SELECT COUNT(*) FROM pragma_index_list('tasks') WHERE name = 'idx_tasks_thread'`).Scan(&threadIndexCount); err != nil {
+		t.Fatalf("inspect migrated task-thread indexes: %v", err)
+	}
+	if threadIndexCount != 1 {
+		t.Fatalf("expected migrated task-thread index once, got %d", threadIndexCount)
+	}
+}

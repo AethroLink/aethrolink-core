@@ -86,7 +86,6 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS runtime_leases (lease_id TEXT PRIMARY KEY, target_id TEXT NOT NULL, subcontext_key TEXT, process_id TEXT, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, released_at TEXT)`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_leases_target_subcontext_released ON runtime_leases(target_id, subcontext_key, released_at)`,
 		`CREATE TABLE IF NOT EXISTS tasks (task_id TEXT PRIMARY KEY, thread_id TEXT, conversation_id TEXT NOT NULL, sender TEXT NOT NULL, intent TEXT NOT NULL, requested_agent_id TEXT, resolved_agent_id TEXT, runtime_options_json TEXT NOT NULL, payload_artifact_id TEXT, status TEXT NOT NULL, remote_binding TEXT, remote_execution_id TEXT, remote_session_id TEXT, last_error_json TEXT, result_artifact_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
-		`CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(resolved_agent_id, status)`,
@@ -110,6 +109,11 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	// readable when new continuity fields land after initial bootstrap.
 	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tasks ADD COLUMN thread_id TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
 		return fmt.Errorf("migrate sqlite add tasks.thread_id: %w", err)
+	}
+	// Create the task-thread index only after the additive column upgrade succeeds
+	// so pre-thread databases can still migrate in place.
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id)`); err != nil {
+		return fmt.Errorf("migrate sqlite create idx_tasks_thread: %w", err)
 	}
 	return nil
 }
