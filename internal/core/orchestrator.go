@@ -30,6 +30,10 @@ type subscriber struct {
 	ch     chan atypes.TaskEvent
 }
 
+type threadSessionReusePredictor interface {
+	PredictSessionReuse(ctx context.Context, task atypes.TaskEnvelope) (bool, error)
+}
+
 type Orchestrator struct {
 	discovery        atypes.DiscoveryProvider
 	store            *storage.SQLiteStore
@@ -526,6 +530,33 @@ func deriveThreadInterruptionReason(thread atypes.ThreadRecord, lastTask atypes.
 	return ""
 }
 
+func (o *Orchestrator) predictThreadSessionReuse(ctx context.Context, thread atypes.ThreadRecord, sender, target string) bool {
+	spec, err := o.discovery.ResolveRuntime(ctx, target)
+	if err != nil {
+		return false
+	}
+	adapter, ok := o.adapters.Get(spec.Adapter)
+	if !ok {
+		return false
+	}
+	predictor, ok := adapter.(threadSessionReusePredictor)
+	if !ok {
+		return false
+	}
+	willReuse, err := predictor.PredictSessionReuse(ctx, atypes.TaskEnvelope{
+		TaskID:         atypes.NewID(),
+		ThreadID:       thread.ThreadID,
+		ConversationID: thread.ThreadID,
+		Sender:         sender,
+		TargetAgentID:  target,
+		RuntimeOptions: map[string]any{},
+	})
+	if err != nil {
+		return false
+	}
+	return willReuse
+}
+
 // InspectThread bundles persisted turns and continuity state for operator debugging.
 func (o *Orchestrator) InspectThread(ctx context.Context, threadID string) (atypes.ThreadInspection, error) {
 	thread, err := o.getThreadRecord(ctx, threadID)
@@ -560,12 +591,10 @@ func (o *Orchestrator) InspectThread(ctx context.Context, threadID string) (atyp
 	if err != nil {
 		return atypes.ThreadInspection{}, err
 	}
-	nextContinue := atypes.ThreadNextContinue{SenderAgentID: sender, TargetAgentID: target}
-	for _, side := range continuity {
-		if side.AgentID == target && len(side.SessionBindings) > 0 {
-			nextContinue.WillReuseRemoteSession = true
-			break
-		}
+	nextContinue := atypes.ThreadNextContinue{
+		SenderAgentID:          sender,
+		TargetAgentID:          target,
+		WillReuseRemoteSession: o.predictThreadSessionReuse(ctx, thread, sender, target),
 	}
 	var lastTask atypes.TaskRecord
 	if thread.LastTaskID != "" {
