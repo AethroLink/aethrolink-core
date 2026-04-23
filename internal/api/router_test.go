@@ -348,9 +348,8 @@ func TestThreadCreateContinueAndListTurns(t *testing.T) {
 	if firstTask.Task.TaskID == "" {
 		t.Fatalf("expected first continue task id")
 	}
-	_ = waitForStatus(t, server.URL, firstTask.Task.TaskID, "completed")
 
-	secondContinueResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"sender":"mock_openclaw","intent":"code.patch","payload":{"mode":"success"}}`))
+	secondContinueResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"intent":"code.patch","payload":{"mode":"success"}}`))
 	if err != nil {
 		t.Fatalf("continue thread second turn: %v", err)
 	}
@@ -366,15 +365,35 @@ func TestThreadCreateContinueAndListTurns(t *testing.T) {
 	if secondTask.Task.TaskID == "" {
 		t.Fatalf("expected second continue task id")
 	}
+
+	thirdContinueResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"intent":"ui.review","payload":{"mode":"success"}}`))
+	if err != nil {
+		t.Fatalf("continue thread third turn: %v", err)
+	}
+	defer thirdContinueResp.Body.Close()
+	var thirdTask struct {
+		Task struct {
+			TaskID string `json:"task_id"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(thirdContinueResp.Body).Decode(&thirdTask); err != nil {
+		t.Fatalf("decode third continue response: %v", err)
+	}
+	if thirdTask.Task.TaskID == "" {
+		t.Fatalf("expected third continue task id")
+	}
+
 	firstLoaded := waitForStatus(t, server.URL, firstTask.Task.TaskID, "completed")
 	secondLoaded := waitForStatus(t, server.URL, secondTask.Task.TaskID, "completed")
+	thirdLoaded := waitForStatus(t, server.URL, thirdTask.Task.TaskID, "completed")
 	firstConversationID, _ := firstLoaded["conversation_id"].(string)
 	secondConversationID, _ := secondLoaded["conversation_id"].(string)
-	if firstConversationID == "" || secondConversationID == "" {
-		t.Fatalf("expected thread tasks to persist conversation ids, got %q and %q", firstConversationID, secondConversationID)
+	thirdConversationID, _ := thirdLoaded["conversation_id"].(string)
+	if firstConversationID == "" || secondConversationID == "" || thirdConversationID == "" {
+		t.Fatalf("expected thread tasks to persist conversation ids, got %q, %q, %q", firstConversationID, secondConversationID, thirdConversationID)
 	}
-	if firstConversationID != secondConversationID {
-		t.Fatalf("expected thread continuation to preserve conversation id, got %q then %q", firstConversationID, secondConversationID)
+	if firstConversationID != secondConversationID || secondConversationID != thirdConversationID {
+		t.Fatalf("expected thread continuation to preserve conversation id, got %q, %q, %q", firstConversationID, secondConversationID, thirdConversationID)
 	}
 
 	getThreadResp, err := http.Get(server.URL + "/v1/threads/" + created.Thread.ThreadID)
@@ -386,10 +405,10 @@ func TestThreadCreateContinueAndListTurns(t *testing.T) {
 	if err := json.NewDecoder(getThreadResp.Body).Decode(&loadedThread); err != nil {
 		t.Fatalf("decode thread get response: %v", err)
 	}
-	if loadedThread["last_actor_agent_id"] != "mock_openclaw" {
+	if loadedThread["last_actor_agent_id"] != "mock_hermes" {
 		t.Fatalf("expected thread to remember last actor, got %#v", loadedThread["last_actor_agent_id"])
 	}
-	if loadedThread["last_target_agent_id"] != "mock_hermes" {
+	if loadedThread["last_target_agent_id"] != "mock_openclaw" {
 		t.Fatalf("expected thread to remember last target, got %#v", loadedThread["last_target_agent_id"])
 	}
 
@@ -404,14 +423,17 @@ func TestThreadCreateContinueAndListTurns(t *testing.T) {
 	if err := json.NewDecoder(turnsResp.Body).Decode(&turnsBody); err != nil {
 		t.Fatalf("decode turns response: %v", err)
 	}
-	if len(turnsBody.Turns) != 2 {
-		t.Fatalf("expected 2 thread turns, got %d", len(turnsBody.Turns))
+	if len(turnsBody.Turns) != 3 {
+		t.Fatalf("expected 3 thread turns, got %d", len(turnsBody.Turns))
 	}
 	if turnsBody.Turns[0]["sender_agent_id"] != "mock_hermes" || turnsBody.Turns[0]["target_agent_id"] != "mock_openclaw" {
 		t.Fatalf("expected first turn order to persist, got %#v", turnsBody.Turns[0])
 	}
 	if turnsBody.Turns[1]["sender_agent_id"] != "mock_openclaw" || turnsBody.Turns[1]["target_agent_id"] != "mock_hermes" {
 		t.Fatalf("expected second turn order to persist, got %#v", turnsBody.Turns[1])
+	}
+	if turnsBody.Turns[2]["sender_agent_id"] != "mock_hermes" || turnsBody.Turns[2]["target_agent_id"] != "mock_openclaw" {
+		t.Fatalf("expected third turn order to persist, got %#v", turnsBody.Turns[2])
 	}
 }
 
