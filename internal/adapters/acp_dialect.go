@@ -29,7 +29,9 @@ type acpDialect interface {
 
 func defaultACPDialects() map[string]acpDialect {
 	items := map[string]acpDialect{}
-	for _, dialect := range []acpDialect{newHermesACPDialect(), newOpenClawACPDialect()} {
+	// Keep the ACP transport generic while runtime-specific request/event quirks
+	// stay behind small dialect implementations.
+	for _, dialect := range []acpDialect{newHermesACPDialect(), newOpenClawACPDialect(), newGooseACPDialect()} {
 		items[dialect.Name()] = dialect
 	}
 	return items
