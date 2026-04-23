@@ -432,3 +432,54 @@ func TestSQLiteStoreMigrateAddsThreadColumnBeforeCreatingTaskThreadIndex(t *test
 		t.Fatalf("expected migrated task-thread index once, got %d", threadIndexCount)
 	}
 }
+
+func TestSQLiteStoreMarksInterruptedThreadsOnRestart(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	thread := atypes.ThreadRecord{
+		ThreadID:          atypes.NewID(),
+		AgentAID:          "core",
+		AgentBID:          "openclaw_main",
+		Status:            atypes.ThreadStatusActive,
+		ContinuityKey:     "thread:restart-reconcile",
+		LastTaskID:        "task-awaiting",
+		LastActorAgentID:  "core",
+		LastTargetAgentID: "openclaw_main",
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	if err := store.InsertThread(ctx, thread); err != nil {
+		t.Fatalf("insert thread: %v", err)
+	}
+	if err := store.InsertTask(ctx, atypes.TaskRecord{
+		TaskID:          "task-awaiting",
+		ThreadID:        thread.ThreadID,
+		ConversationID:  thread.ThreadID,
+		Sender:          "core",
+		Intent:          "ui.review",
+		ResolvedAgentID: "openclaw_main",
+		RuntimeOptions:  map[string]any{"session_key": "main"},
+		Status:          atypes.TaskStatusAwaitingInput,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}); err != nil {
+		t.Fatalf("insert awaiting-input task: %v", err)
+	}
+	if err := store.MarkInterruptedThreadsOnRestart(ctx); err != nil {
+		t.Fatalf("mark interrupted threads on restart: %v", err)
+	}
+	loaded, err := store.GetThread(ctx, thread.ThreadID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if loaded.Status != atypes.ThreadStatusInterrupted {
+		t.Fatalf("expected interrupted thread status, got %q", loaded.Status)
+	}
+}

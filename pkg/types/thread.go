@@ -6,11 +6,12 @@ import "time"
 type ThreadStatus string
 
 const (
-	ThreadStatusActive    ThreadStatus = "active"
-	ThreadStatusPaused    ThreadStatus = "paused"
-	ThreadStatusCompleted ThreadStatus = "completed"
-	ThreadStatusFailed    ThreadStatus = "failed"
-	ThreadStatusCancelled ThreadStatus = "cancelled"
+	ThreadStatusActive      ThreadStatus = "active"
+	ThreadStatusPaused      ThreadStatus = "paused"
+	ThreadStatusInterrupted ThreadStatus = "interrupted"
+	ThreadStatusCompleted   ThreadStatus = "completed"
+	ThreadStatusFailed      ThreadStatus = "failed"
+	ThreadStatusCancelled   ThreadStatus = "cancelled"
 )
 
 // ThreadRecord is the first-class persisted continuity object above tasks.

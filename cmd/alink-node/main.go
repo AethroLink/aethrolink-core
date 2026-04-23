@@ -38,7 +38,10 @@ func main() {
 	agentService := agents.NewService(store)
 	adapterRegistry := adapters.NewRegistry()
 	adapterRegistry.Register("acp", adapters.NewACPAdapter(agentService, runtimeManager))
-	orchestrator := core.NewOrchestrator(agentService, store, runtimeManager, adapterRegistry)
+	orchestrator, err := core.NewOrchestrator(agentService, store, runtimeManager, adapterRegistry)
+	if err != nil {
+		log.Fatalf("create orchestrator: %v", err)
+	}
 	addr := *host + ":" + *port
 	log.Printf("aethrolink-go listening on http://%s", addr)
 	if err := http.ListenAndServe(addr, api.NewServer(orchestrator, agentService)); err != nil {

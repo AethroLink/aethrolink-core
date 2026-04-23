@@ -50,7 +50,11 @@ func setupRealAdapterServer(t *testing.T) (*httptest.Server, *core.Orchestrator)
 	})
 	adapterRegistry := adapters.NewRegistry()
 	adapterRegistry.Register("acp", adapters.NewACPAdapter(agentService, runtimeManager))
-	orchestrator := core.NewOrchestrator(agentService, store, runtimeManager, adapterRegistry)
+	orchestrator, err := core.NewOrchestrator(agentService, store, runtimeManager, adapterRegistry)
+	if err != nil {
+		_ = store.Close()
+		t.Fatalf("create orchestrator: %v", err)
+	}
 	server := httptest.NewServer(NewServer(orchestrator, agentService))
 	t.Cleanup(func() {
 		_ = orchestrator.StopAllRuntimeProcesses(context.Background())
