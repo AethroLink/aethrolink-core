@@ -705,3 +705,127 @@ func TestThreadAutoContinueStopsDeterministicallyOnTerminalError(t *testing.T) {
 		t.Fatalf("expected second auto turn to come from mock_openclaw before stopping, got %#v", turns[1])
 	}
 }
+
+func TestThreadInspectShowsContinuityBindingsAndNextReuse(t *testing.T) {
+	server, orchestrator := setupRealAdapterServer(t)
+	defer func() { _ = orchestrator.StopAllRuntimeProcesses(context.Background()) }()
+
+	createResp, err := http.Post(server.URL+"/v1/threads", "application/json", strings.NewReader(`{"agent_a_id":"hermes_real_test","agent_b_id":"openclaw_real_test"}`))
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	defer createResp.Body.Close()
+	var created struct {
+		Thread struct {
+			ThreadID string `json:"thread_id"`
+		} `json:"thread"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode thread create response: %v", err)
+	}
+
+	firstResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"sender":"hermes_real_test","intent":"ui.review","payload":{"mode":"success"}}`))
+	if err != nil {
+		t.Fatalf("first continue: %v", err)
+	}
+	defer firstResp.Body.Close()
+	var first struct {
+		Task struct {
+			TaskID string `json:"task_id"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(firstResp.Body).Decode(&first); err != nil {
+		t.Fatalf("decode first continue: %v", err)
+	}
+	_ = waitForStatus(t, server.URL, first.Task.TaskID, "completed")
+
+	secondResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"intent":"code.patch","payload":{"mode":"success"}}`))
+	if err != nil {
+		t.Fatalf("second continue: %v", err)
+	}
+	defer secondResp.Body.Close()
+	var second struct {
+		Task struct {
+			TaskID string `json:"task_id"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(secondResp.Body).Decode(&second); err != nil {
+		t.Fatalf("decode second continue: %v", err)
+	}
+	_ = waitForStatus(t, server.URL, second.Task.TaskID, "completed")
+
+	inspectResp, err := http.Get(server.URL + "/v1/threads/" + created.Thread.ThreadID + "/inspect")
+	if err != nil {
+		t.Fatalf("inspect thread: %v", err)
+	}
+	defer inspectResp.Body.Close()
+	var inspect struct {
+		NextContinue map[string]any   `json:"next_continue"`
+		Continuity   []map[string]any `json:"continuity"`
+		Turns        []map[string]any `json:"turns"`
+	}
+	if err := json.NewDecoder(inspectResp.Body).Decode(&inspect); err != nil {
+		t.Fatalf("decode inspect response: %v", err)
+	}
+	if len(inspect.Turns) != 2 {
+		t.Fatalf("expected inspect response to include 2 turns, got %d", len(inspect.Turns))
+	}
+	if len(inspect.Continuity) != 2 {
+		t.Fatalf("expected inspect response to include both thread sides, got %#v", inspect.Continuity)
+	}
+	if inspect.NextContinue["target_agent_id"] != "openclaw_real_test" {
+		t.Fatalf("expected next continue target to be openclaw_real_test, got %#v", inspect.NextContinue)
+	}
+	if inspect.NextContinue["will_reuse_remote_session"] != true {
+		t.Fatalf("expected next continue to report session reuse, got %#v", inspect.NextContinue)
+	}
+}
+
+func TestThreadInspectShowsInterruptionReasonAfterRestart(t *testing.T) {
+	root := t.TempDir()
+	server, _, cleanup := setupServerAtRoot(t, root)
+	createResp, err := http.Post(server.URL+"/v1/threads", "application/json", strings.NewReader(`{"agent_a_id":"mock_hermes","agent_b_id":"mock_openclaw"}`))
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	defer createResp.Body.Close()
+	var created struct {
+		Thread struct {
+			ThreadID string `json:"thread_id"`
+		} `json:"thread"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create thread response: %v", err)
+	}
+	continueResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"sender":"mock_hermes","intent":"ui.review","payload":{"mode":"await_then_resume"}}`))
+	if err != nil {
+		t.Fatalf("continue thread before restart: %v", err)
+	}
+	defer continueResp.Body.Close()
+	var task struct {
+		Task struct {
+			TaskID string `json:"task_id"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(continueResp.Body).Decode(&task); err != nil {
+		t.Fatalf("decode awaiting-input continue response: %v", err)
+	}
+	_ = waitForStatus(t, server.URL, task.Task.TaskID, "awaiting_input")
+	cleanup()
+
+	restartedServer, _, restartedCleanup := setupServerAtRoot(t, root)
+	defer restartedCleanup()
+	inspectResp, err := http.Get(restartedServer.URL + "/v1/threads/" + created.Thread.ThreadID + "/inspect")
+	if err != nil {
+		t.Fatalf("inspect restarted thread: %v", err)
+	}
+	defer inspectResp.Body.Close()
+	var inspect map[string]any
+	if err := json.NewDecoder(inspectResp.Body).Decode(&inspect); err != nil {
+		t.Fatalf("decode inspect response: %v", err)
+	}
+	reason, _ := inspect["interruption_reason"].(string)
+	if reason == "" {
+		t.Fatalf("expected interruption reason after restart, got %#v", inspect)
+	}
+}

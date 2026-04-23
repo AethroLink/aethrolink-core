@@ -38,6 +38,7 @@ func NewServer(orchestrator *core.Orchestrator, agentService *agents.Service) ht
 	mux.HandleFunc("POST /v1/tasks/{task_id}/cancel", s.handleCancelTask)
 	mux.HandleFunc("POST /v1/threads", s.handleCreateThread)
 	mux.HandleFunc("GET /v1/threads/{thread_id}", s.handleGetThread)
+	mux.HandleFunc("GET /v1/threads/{thread_id}/inspect", s.handleInspectThread)
 	mux.HandleFunc("GET /v1/threads/{thread_id}/turns", s.handleListThreadTurns)
 	mux.HandleFunc("POST /v1/threads/{thread_id}/continue", s.handleContinueThread)
 	mux.HandleFunc("GET /v1/targets", s.handleListTargets)
@@ -98,6 +99,15 @@ func (s *Server) handleGetThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, thread)
+}
+
+func (s *Server) handleInspectThread(w http.ResponseWriter, r *http.Request) {
+	inspection, err := s.orchestrator.InspectThread(r.Context(), r.PathValue("thread_id"))
+	if err != nil {
+		writeError(w, errorStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, inspection)
 }
 
 func (s *Server) handleListThreadTurns(w http.ResponseWriter, r *http.Request) {

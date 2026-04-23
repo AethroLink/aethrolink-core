@@ -633,6 +633,32 @@ func (s *SQLiteStore) GetSessionBinding(ctx context.Context, targetID, subcontex
 	return scanSessionBinding(row)
 }
 
+// ListSessionBindingsByStickyKey exposes all reusable bindings for one continuity key.
+func (s *SQLiteStore) ListSessionBindingsByStickyKey(ctx context.Context, stickyKey string) ([]atypes.SessionBinding, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT target_id, subcontext_key, sticky_key, adapter, remote_session_id, metadata_json, created_at, updated_at, last_used_at, last_activity_at
+		FROM session_bindings
+		WHERE sticky_key = ?
+		ORDER BY target_id ASC, subcontext_key ASC
+	`, stickyKey)
+	if err != nil {
+		return nil, fmt.Errorf("query session bindings by sticky key: %w", err)
+	}
+	defer rows.Close()
+	var bindings []atypes.SessionBinding
+	for rows.Next() {
+		binding, err := scanSessionBinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		bindings = append(bindings, binding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate session bindings by sticky key: %w", err)
+	}
+	return bindings, nil
+}
+
 func (s *SQLiteStore) TouchSessionBindingActivity(ctx context.Context, targetID, subcontextKey, stickyKey string, touchedAt time.Time) error {
 	_, err := s.db.ExecContext(ctx, `
 		UPDATE session_bindings SET updated_at = ?, last_activity_at = ?

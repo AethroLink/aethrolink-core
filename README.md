@@ -237,6 +237,19 @@ Verify:
 command -v alink-cli
 ```
 
+Thread continuity inspection example:
+
+```bash
+alink-cli thread-get --server http://127.0.0.1:7777 --thread-id <thread-id>
+```
+
+That inspection view shows:
+- persisted thread state
+- ordered turns
+- current reusable session bindings per agent
+- the next sender/target pair and whether the next continue call should reuse a remote session
+- interruption reason when restart reconciliation marked the thread interrupted
+
 ## Status
 
 This repository is intended to start as a local-first runtime orchestration node and grow into a protocol node later without replacing the core.

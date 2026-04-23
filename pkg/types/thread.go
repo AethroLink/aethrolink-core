@@ -43,6 +43,30 @@ type ThreadTurn struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
+// ThreadContinuitySide shows one agent's current reusable continuity state.
+type ThreadContinuitySide struct {
+	AgentID               string           `json:"agent_id"`
+	LastRemoteSessionID   string           `json:"last_remote_session_id,omitempty"`
+	LastRemoteExecutionID string           `json:"last_remote_execution_id,omitempty"`
+	SessionBindings       []SessionBinding `json:"session_bindings,omitempty"`
+}
+
+// ThreadNextContinue describes what the next manual continue call would target.
+type ThreadNextContinue struct {
+	SenderAgentID          string `json:"sender_agent_id"`
+	TargetAgentID          string `json:"target_agent_id"`
+	WillReuseRemoteSession bool   `json:"will_reuse_remote_session"`
+}
+
+// ThreadInspection bundles the operator-facing continuity view for one thread.
+type ThreadInspection struct {
+	Thread             ThreadRecord           `json:"thread"`
+	Turns              []ThreadTurn           `json:"turns"`
+	Continuity         []ThreadContinuitySide `json:"continuity"`
+	NextContinue       ThreadNextContinue     `json:"next_continue"`
+	InterruptionReason string                 `json:"interruption_reason,omitempty"`
+}
+
 // ThreadCreateRequest creates a durable two-agent thread boundary.
 type ThreadCreateRequest struct {
 	AgentAID      string         `json:"agent_a_id"`
