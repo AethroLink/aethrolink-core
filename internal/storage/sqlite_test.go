@@ -226,3 +226,102 @@ func TestSQLiteStorePersistsAgentsAndHeartbeats(t *testing.T) {
 		t.Fatalf("expected offline status, got %q", loaded.Status)
 	}
 }
+
+func TestSQLiteStorePersistsThreadsAndTurnsAcrossRestart(t *testing.T) {
+	tmp := t.TempDir()
+	databasePath := filepath.Join(tmp, "aethrolink.db")
+	artifactPath := filepath.Join(tmp, "artifacts")
+	ctx := context.Background()
+	now := time.Now().UTC()
+	thread := atypes.ThreadRecord{
+		ThreadID:          atypes.NewID(),
+		AgentAID:          "core",
+		AgentBID:          "openclaw_main",
+		Status:            atypes.ThreadStatusActive,
+		ContinuityKey:     "thread:core-openclaw",
+		LastTaskID:        "task-2",
+		LastActorAgentID:  "openclaw_main",
+		LastTargetAgentID: "core",
+		Metadata:          map[string]any{"purpose": "roundtrip"},
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	turnOne := atypes.ThreadTurn{
+		ThreadID:          thread.ThreadID,
+		TurnIndex:         1,
+		TaskID:            "task-1",
+		SenderAgentID:     "core",
+		TargetAgentID:     "openclaw_main",
+		RemoteSessionID:   "session-1",
+		RemoteExecutionID: "exec-1",
+		Status:            string(atypes.TaskStatusCompleted),
+		CreatedAt:         now,
+		UpdatedAt:         now,
+	}
+	turnTwo := atypes.ThreadTurn{
+		ThreadID:          thread.ThreadID,
+		TurnIndex:         2,
+		TaskID:            "task-2",
+		SenderAgentID:     "openclaw_main",
+		TargetAgentID:     "core",
+		RemoteSessionID:   "session-1",
+		RemoteExecutionID: "exec-2",
+		Status:            string(atypes.TaskStatusCompleted),
+		CreatedAt:         now.Add(1 * time.Minute),
+		UpdatedAt:         now.Add(1 * time.Minute),
+	}
+
+	store, err := Open(databasePath, artifactPath, "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if err := store.InsertThread(ctx, thread); err != nil {
+		t.Fatalf("insert thread: %v", err)
+	}
+	if err := store.AppendThreadTurn(ctx, turnOne); err != nil {
+		t.Fatalf("append turn one: %v", err)
+	}
+	if err := store.AppendThreadTurn(ctx, turnTwo); err != nil {
+		t.Fatalf("append turn two: %v", err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	reopened, err := Open(databasePath, artifactPath, "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer reopened.Close()
+
+	loadedThread, err := reopened.GetThread(ctx, thread.ThreadID)
+	if err != nil {
+		t.Fatalf("get thread: %v", err)
+	}
+	if loadedThread.AgentAID != thread.AgentAID || loadedThread.AgentBID != thread.AgentBID {
+		t.Fatalf("expected persisted thread participants, got %#v", loadedThread)
+	}
+	if loadedThread.LastTaskID != "task-2" {
+		t.Fatalf("expected last task to persist, got %q", loadedThread.LastTaskID)
+	}
+	if loadedThread.Metadata["purpose"] != "roundtrip" {
+		t.Fatalf("expected metadata to persist, got %#v", loadedThread.Metadata)
+	}
+
+	turns, err := reopened.ListThreadTurns(ctx, thread.ThreadID)
+	if err != nil {
+		t.Fatalf("list thread turns: %v", err)
+	}
+	if len(turns) != 2 {
+		t.Fatalf("expected 2 turns, got %d", len(turns))
+	}
+	if turns[0].TurnIndex != 1 || turns[0].TaskID != "task-1" {
+		t.Fatalf("expected first persisted turn to stay first, got %#v", turns[0])
+	}
+	if turns[1].TurnIndex != 2 || turns[1].TaskID != "task-2" {
+		t.Fatalf("expected second persisted turn to stay second, got %#v", turns[1])
+	}
+	if turns[0].RemoteSessionID != turns[1].RemoteSessionID {
+		t.Fatalf("expected thread continuity session reuse, got %#v", turns)
+	}
+}

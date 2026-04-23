@@ -31,3 +31,4 @@ target/test-registry-*.yaml
 # local generated architecture artifacts
 /aethrolink-core-architecture.html
 /aethrolink-core-architecture.png
+*/plans/*

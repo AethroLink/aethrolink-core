@@ -89,6 +89,10 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(resolved_agent_id, status)`,
+		`CREATE TABLE IF NOT EXISTS threads (thread_id TEXT PRIMARY KEY, agent_a_id TEXT NOT NULL, agent_b_id TEXT NOT NULL, status TEXT NOT NULL, continuity_key TEXT NOT NULL, last_task_id TEXT, last_actor_agent_id TEXT, last_target_agent_id TEXT, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_threads_agents_status ON threads(agent_a_id, agent_b_id, status)`,
+		`CREATE TABLE IF NOT EXISTS thread_turns (thread_id TEXT NOT NULL, turn_index INTEGER NOT NULL, task_id TEXT, sender_agent_id TEXT NOT NULL, target_agent_id TEXT NOT NULL, remote_session_id TEXT, remote_execution_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(thread_id, turn_index))`,
+		`CREATE INDEX IF NOT EXISTS idx_thread_turns_thread_order ON thread_turns(thread_id, turn_index)`,
 		`CREATE TABLE IF NOT EXISTS session_bindings (target_id TEXT NOT NULL, subcontext_key TEXT NOT NULL, sticky_key TEXT NOT NULL, adapter TEXT NOT NULL, remote_session_id TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_used_at TEXT NOT NULL, last_activity_at TEXT NOT NULL, PRIMARY KEY(target_id, subcontext_key, sticky_key))`,
 		`CREATE INDEX IF NOT EXISTS idx_session_bindings_target_subcontext ON session_bindings(target_id, subcontext_key)`,
 		`CREATE TABLE IF NOT EXISTS task_events (event_id TEXT PRIMARY KEY, task_id TEXT NOT NULL, seq INTEGER NOT NULL, kind TEXT NOT NULL, state TEXT NOT NULL, source TEXT NOT NULL, message TEXT, data_json TEXT NOT NULL, created_at TEXT NOT NULL, UNIQUE(task_id, seq))`,
@@ -303,6 +307,67 @@ func (s *SQLiteStore) GetTask(ctx context.Context, taskID string) (atypes.TaskRe
 		FROM tasks WHERE task_id = ?
 	`, taskID)
 	return scanTask(row)
+}
+
+// InsertThread persists the durable thread record that owns cross-task continuity.
+func (s *SQLiteStore) InsertThread(ctx context.Context, thread atypes.ThreadRecord) error {
+	metadataJSON, err := json.Marshal(thread.Metadata)
+	if err != nil {
+		return fmt.Errorf("marshal thread metadata: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `
+		INSERT INTO threads(thread_id, agent_a_id, agent_b_id, status, continuity_key, last_task_id, last_actor_agent_id, last_target_agent_id, metadata_json, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, thread.ThreadID, thread.AgentAID, thread.AgentBID, string(thread.Status), thread.ContinuityKey, nullString(thread.LastTaskID), nullString(thread.LastActorAgentID), nullString(thread.LastTargetAgentID), string(metadataJSON), thread.CreatedAt.Format(time.RFC3339Nano), thread.UpdatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("insert thread: %w", err)
+	}
+	return nil
+}
+
+// GetThread loads one persisted thread by its durable thread identifier.
+func (s *SQLiteStore) GetThread(ctx context.Context, threadID string) (atypes.ThreadRecord, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT thread_id, agent_a_id, agent_b_id, status, continuity_key, last_task_id, last_actor_agent_id, last_target_agent_id, metadata_json, created_at, updated_at
+		FROM threads WHERE thread_id = ?
+	`, threadID)
+	return scanThread(row)
+}
+
+// AppendThreadTurn adds one ordered turn record to a persisted thread history.
+func (s *SQLiteStore) AppendThreadTurn(ctx context.Context, turn atypes.ThreadTurn) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO thread_turns(thread_id, turn_index, task_id, sender_agent_id, target_agent_id, remote_session_id, remote_execution_id, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, turn.ThreadID, turn.TurnIndex, nullString(turn.TaskID), turn.SenderAgentID, turn.TargetAgentID, nullString(turn.RemoteSessionID), nullString(turn.RemoteExecutionID), turn.Status, turn.CreatedAt.Format(time.RFC3339Nano), turn.UpdatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("append thread turn: %w", err)
+	}
+	return nil
+}
+
+// ListThreadTurns returns the persisted turn log in conversation order.
+func (s *SQLiteStore) ListThreadTurns(ctx context.Context, threadID string) ([]atypes.ThreadTurn, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT thread_id, turn_index, task_id, sender_agent_id, target_agent_id, remote_session_id, remote_execution_id, status, created_at, updated_at
+		FROM thread_turns WHERE thread_id = ? ORDER BY turn_index ASC
+	`, threadID)
+	if err != nil {
+		return nil, fmt.Errorf("query thread turns: %w", err)
+	}
+	defer rows.Close()
+	var turns []atypes.ThreadTurn
+	for rows.Next() {
+		turn, err := scanThreadTurn(rows)
+		if err != nil {
+			return nil, err
+		}
+		turns = append(turns, turn)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate thread turns: %w", err)
+	}
+	return turns, nil
 }
 
 func (s *SQLiteStore) UpdateTaskState(ctx context.Context, taskID string, status atypes.TaskStatus, remote *atypes.RemoteHandle, lastError *atypes.TaskError, resultArtifactID string) error {
@@ -589,6 +654,68 @@ func scanTask(scanner interface{ Scan(dest ...any) error }) (atypes.TaskRecord, 
 		return atypes.TaskRecord{}, fmt.Errorf("parse updated_at: %w", err)
 	}
 	return task, nil
+}
+
+// scanThread reconstructs one persisted thread row into its typed record form.
+func scanThread(scanner interface{ Scan(dest ...any) error }) (atypes.ThreadRecord, error) {
+	var (
+		thread            atypes.ThreadRecord
+		status            string
+		lastTaskID        sql.NullString
+		lastActorAgentID  sql.NullString
+		lastTargetAgentID sql.NullString
+		metadataJSON      string
+		createdAt         string
+		updatedAt         string
+	)
+	if err := scanner.Scan(&thread.ThreadID, &thread.AgentAID, &thread.AgentBID, &status, &thread.ContinuityKey, &lastTaskID, &lastActorAgentID, &lastTargetAgentID, &metadataJSON, &createdAt, &updatedAt); err != nil {
+		return atypes.ThreadRecord{}, err
+	}
+	thread.Status = atypes.ThreadStatus(status)
+	thread.LastTaskID = lastTaskID.String
+	thread.LastActorAgentID = lastActorAgentID.String
+	thread.LastTargetAgentID = lastTargetAgentID.String
+	if err := json.Unmarshal([]byte(metadataJSON), &thread.Metadata); err != nil {
+		return atypes.ThreadRecord{}, fmt.Errorf("unmarshal thread metadata: %w", err)
+	}
+	var err error
+	thread.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return atypes.ThreadRecord{}, fmt.Errorf("parse thread created_at: %w", err)
+	}
+	thread.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return atypes.ThreadRecord{}, fmt.Errorf("parse thread updated_at: %w", err)
+	}
+	return thread, nil
+}
+
+// scanThreadTurn reconstructs one ordered turn row for thread history queries.
+func scanThreadTurn(scanner interface{ Scan(dest ...any) error }) (atypes.ThreadTurn, error) {
+	var (
+		turn              atypes.ThreadTurn
+		taskID            sql.NullString
+		remoteSessionID   sql.NullString
+		remoteExecutionID sql.NullString
+		createdAt         string
+		updatedAt         string
+	)
+	if err := scanner.Scan(&turn.ThreadID, &turn.TurnIndex, &taskID, &turn.SenderAgentID, &turn.TargetAgentID, &remoteSessionID, &remoteExecutionID, &turn.Status, &createdAt, &updatedAt); err != nil {
+		return atypes.ThreadTurn{}, err
+	}
+	turn.TaskID = taskID.String
+	turn.RemoteSessionID = remoteSessionID.String
+	turn.RemoteExecutionID = remoteExecutionID.String
+	var err error
+	turn.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt)
+	if err != nil {
+		return atypes.ThreadTurn{}, fmt.Errorf("parse thread turn created_at: %w", err)
+	}
+	turn.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt)
+	if err != nil {
+		return atypes.ThreadTurn{}, fmt.Errorf("parse thread turn updated_at: %w", err)
+	}
+	return turn, nil
 }
 
 func scanEvent(scanner interface{ Scan(dest ...any) error }) (atypes.TaskEvent, error) {
