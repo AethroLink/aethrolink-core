@@ -85,7 +85,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		`CREATE TABLE IF NOT EXISTS runtimes (target_id TEXT PRIMARY KEY, adapter_kind TEXT NOT NULL, spec_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS runtime_leases (lease_id TEXT PRIMARY KEY, target_id TEXT NOT NULL, subcontext_key TEXT, process_id TEXT, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, released_at TEXT)`,
 		`CREATE INDEX IF NOT EXISTS idx_runtime_leases_target_subcontext_released ON runtime_leases(target_id, subcontext_key, released_at)`,
-		`CREATE TABLE IF NOT EXISTS tasks (task_id TEXT PRIMARY KEY, conversation_id TEXT NOT NULL, sender TEXT NOT NULL, intent TEXT NOT NULL, requested_agent_id TEXT, resolved_agent_id TEXT, runtime_options_json TEXT NOT NULL, payload_artifact_id TEXT, status TEXT NOT NULL, remote_binding TEXT, remote_execution_id TEXT, remote_session_id TEXT, last_error_json TEXT, result_artifact_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE TABLE IF NOT EXISTS tasks (task_id TEXT PRIMARY KEY, thread_id TEXT, conversation_id TEXT NOT NULL, sender TEXT NOT NULL, intent TEXT NOT NULL, requested_agent_id TEXT, resolved_agent_id TEXT, runtime_options_json TEXT NOT NULL, payload_artifact_id TEXT, status TEXT NOT NULL, remote_binding TEXT, remote_execution_id TEXT, remote_session_id TEXT, last_error_json TEXT, result_artifact_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_conversation ON tasks(conversation_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)`,
 		`CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(resolved_agent_id, status)`,
@@ -104,6 +104,16 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
 			return fmt.Errorf("migrate sqlite: %w", err)
 		}
+	}
+	// Keep additive task-schema upgrades explicit so existing local databases stay
+	// readable when new continuity fields land after initial bootstrap.
+	if _, err := s.db.ExecContext(ctx, `ALTER TABLE tasks ADD COLUMN thread_id TEXT`); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+		return fmt.Errorf("migrate sqlite add tasks.thread_id: %w", err)
+	}
+	// Create the task-thread index only after the additive column upgrade succeeds
+	// so pre-thread databases can still migrate in place.
+	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id)`); err != nil {
+		return fmt.Errorf("migrate sqlite create idx_tasks_thread: %w", err)
 	}
 	return nil
 }
@@ -292,9 +302,9 @@ func (s *SQLiteStore) InsertTask(ctx context.Context, task atypes.TaskRecord) er
 		lastErrorJSON = string(encoded)
 	}
 	_, err = s.db.ExecContext(ctx, `
-		INSERT INTO tasks(task_id, conversation_id, sender, intent, requested_agent_id, resolved_agent_id, runtime_options_json, payload_artifact_id, status, remote_binding, remote_execution_id, remote_session_id, last_error_json, result_artifact_id, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, task.TaskID, task.ConversationID, task.Sender, task.Intent, nullString(task.RequestedAgentID), nullString(task.ResolvedAgentID), string(runtimeOptionsJSON), nullString(task.PayloadArtifactID), string(task.Status), remoteBinding, remoteExecutionID, remoteSessionID, lastErrorJSON, nullString(task.ResultArtifactID), task.CreatedAt.Format(time.RFC3339Nano), task.UpdatedAt.Format(time.RFC3339Nano))
+		INSERT INTO tasks(task_id, thread_id, conversation_id, sender, intent, requested_agent_id, resolved_agent_id, runtime_options_json, payload_artifact_id, status, remote_binding, remote_execution_id, remote_session_id, last_error_json, result_artifact_id, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, task.TaskID, nullString(task.ThreadID), task.ConversationID, task.Sender, task.Intent, nullString(task.RequestedAgentID), nullString(task.ResolvedAgentID), string(runtimeOptionsJSON), nullString(task.PayloadArtifactID), string(task.Status), remoteBinding, remoteExecutionID, remoteSessionID, lastErrorJSON, nullString(task.ResultArtifactID), task.CreatedAt.Format(time.RFC3339Nano), task.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("insert task: %w", err)
 	}
@@ -303,7 +313,7 @@ func (s *SQLiteStore) InsertTask(ctx context.Context, task atypes.TaskRecord) er
 
 func (s *SQLiteStore) GetTask(ctx context.Context, taskID string) (atypes.TaskRecord, error) {
 	row := s.db.QueryRowContext(ctx, `
-		SELECT task_id, conversation_id, sender, intent, requested_agent_id, resolved_agent_id, runtime_options_json, payload_artifact_id, status, remote_binding, remote_execution_id, remote_session_id, last_error_json, result_artifact_id, created_at, updated_at
+		SELECT task_id, thread_id, conversation_id, sender, intent, requested_agent_id, resolved_agent_id, runtime_options_json, payload_artifact_id, status, remote_binding, remote_execution_id, remote_session_id, last_error_json, result_artifact_id, created_at, updated_at
 		FROM tasks WHERE task_id = ?
 	`, taskID)
 	return scanTask(row)
@@ -389,10 +399,18 @@ func (s *SQLiteStore) AppendThreadTurnAndUpdateThread(ctx context.Context, threa
 	`, nullString(lastTaskID), nullString(lastActorAgentID), nullString(lastTargetAgentID), string(atypes.ThreadStatusActive), updatedAt.Format(time.RFC3339Nano), threadID); err != nil {
 		return fmt.Errorf("update thread progress: %w", err)
 	}
+	var nextTurnIndex int64
+	// Allocate turn order inside the same transaction as the insert so two
+	// concurrent continuations cannot claim the same slot for one thread.
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(turn_index), 0) + 1 FROM thread_turns WHERE thread_id = ?
+	`, threadID).Scan(&nextTurnIndex); err != nil {
+		return fmt.Errorf("select next thread turn index: %w", err)
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO thread_turns(thread_id, turn_index, task_id, sender_agent_id, target_agent_id, remote_session_id, remote_execution_id, status, created_at, updated_at)
 		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, turn.ThreadID, turn.TurnIndex, nullString(turn.TaskID), turn.SenderAgentID, turn.TargetAgentID, nullString(turn.RemoteSessionID), nullString(turn.RemoteExecutionID), turn.Status, turn.CreatedAt.Format(time.RFC3339Nano), turn.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
+	`, turn.ThreadID, nextTurnIndex, nullString(turn.TaskID), turn.SenderAgentID, turn.TargetAgentID, nullString(turn.RemoteSessionID), nullString(turn.RemoteExecutionID), turn.Status, turn.CreatedAt.Format(time.RFC3339Nano), turn.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("append thread turn: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
@@ -663,6 +681,7 @@ func (s *SQLiteStore) FinishLaunchHistory(ctx context.Context, launchID, status,
 func scanTask(scanner interface{ Scan(dest ...any) error }) (atypes.TaskRecord, error) {
 	var (
 		task               atypes.TaskRecord
+		threadID           sql.NullString
 		runtimeOptionsJSON string
 		requestedAgentID   sql.NullString
 		resolvedAgentID    sql.NullString
@@ -676,12 +695,13 @@ func scanTask(scanner interface{ Scan(dest ...any) error }) (atypes.TaskRecord, 
 		createdAt          string
 		updatedAt          string
 	)
-	if err := scanner.Scan(&task.TaskID, &task.ConversationID, &task.Sender, &task.Intent, &requestedAgentID, &resolvedAgentID, &runtimeOptionsJSON, &payloadArtifactID, &status, &remoteBinding, &remoteExecutionID, &remoteSessionID, &lastErrorJSON, &resultArtifactID, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&task.TaskID, &threadID, &task.ConversationID, &task.Sender, &task.Intent, &requestedAgentID, &resolvedAgentID, &runtimeOptionsJSON, &payloadArtifactID, &status, &remoteBinding, &remoteExecutionID, &remoteSessionID, &lastErrorJSON, &resultArtifactID, &createdAt, &updatedAt); err != nil {
 		return atypes.TaskRecord{}, err
 	}
 	if err := json.Unmarshal([]byte(runtimeOptionsJSON), &task.RuntimeOptions); err != nil {
 		return atypes.TaskRecord{}, fmt.Errorf("unmarshal runtime options: %w", err)
 	}
+	task.ThreadID = threadID.String
 	task.RequestedAgentID = requestedAgentID.String
 	task.ResolvedAgentID = resolvedAgentID.String
 	task.PayloadArtifactID = payloadArtifactID.String

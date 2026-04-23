@@ -149,6 +149,7 @@ func (r *TaskCreateRequest) Normalize() {
 
 type TaskEnvelope struct {
 	TaskID         string         `json:"task_id"`
+	ThreadID       string         `json:"thread_id,omitempty"`
 	ConversationID string         `json:"conversation_id"`
 	Sender         string         `json:"sender"`
 	TargetAgentID  string         `json:"target_agent_id"`
@@ -205,6 +206,7 @@ type TaskError struct {
 
 type TaskRecord struct {
 	TaskID            string         `json:"task_id"`
+	ThreadID          string         `json:"thread_id,omitempty"`
 	ConversationID    string         `json:"conversation_id"`
 	Sender            string         `json:"sender"`
 	Intent            string         `json:"intent"`

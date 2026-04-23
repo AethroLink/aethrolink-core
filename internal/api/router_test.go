@@ -366,7 +366,16 @@ func TestThreadCreateContinueAndListTurns(t *testing.T) {
 	if secondTask.Task.TaskID == "" {
 		t.Fatalf("expected second continue task id")
 	}
-	_ = waitForStatus(t, server.URL, secondTask.Task.TaskID, "completed")
+	firstLoaded := waitForStatus(t, server.URL, firstTask.Task.TaskID, "completed")
+	secondLoaded := waitForStatus(t, server.URL, secondTask.Task.TaskID, "completed")
+	firstConversationID, _ := firstLoaded["conversation_id"].(string)
+	secondConversationID, _ := secondLoaded["conversation_id"].(string)
+	if firstConversationID == "" || secondConversationID == "" {
+		t.Fatalf("expected thread tasks to persist conversation ids, got %q and %q", firstConversationID, secondConversationID)
+	}
+	if firstConversationID != secondConversationID {
+		t.Fatalf("expected thread continuation to preserve conversation id, got %q then %q", firstConversationID, secondConversationID)
+	}
 
 	getThreadResp, err := http.Get(server.URL + "/v1/threads/" + created.Thread.ThreadID)
 	if err != nil {

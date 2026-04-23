@@ -31,6 +31,9 @@ func (hermesACPDialect) SubcontextKey(options map[string]any) string {
 }
 
 func (hermesACPDialect) StickyKey(task atypes.TaskEnvelope) string {
+	if task.ThreadID != "" {
+		return task.ThreadID
+	}
 	if key := asString(task.RuntimeOptions, "session_key"); key != "" {
 		return key
 	}
@@ -117,7 +120,7 @@ func (hermesACPDialect) RehydrateState(task atypes.TaskRecord) map[string]any {
 		"dialect":    "hermes",
 		"executor":   hermesExecutor(task.RuntimeOptions),
 		"session_id": taskRemoteSessionID(task),
-		"sticky_key": hermesACPDialect{}.StickyKey(atypes.TaskEnvelope{ConversationID: task.ConversationID, RuntimeOptions: task.RuntimeOptions, TaskID: task.TaskID}),
+		"sticky_key": hermesACPDialect{}.StickyKey(atypes.TaskEnvelope{ThreadID: task.ThreadID, ConversationID: task.ConversationID, RuntimeOptions: task.RuntimeOptions, TaskID: task.TaskID}),
 	}
 }
 

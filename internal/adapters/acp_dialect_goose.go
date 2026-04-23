@@ -32,6 +32,9 @@ func (gooseACPDialect) SubcontextKey(options map[string]any) string {
 
 // StickyKey keeps Goose session reuse aligned with the caller conversation.
 func (gooseACPDialect) StickyKey(task atypes.TaskEnvelope) string {
+	if task.ThreadID != "" {
+		return task.ThreadID
+	}
 	if key := asString(task.RuntimeOptions, "session_key"); key != "" {
 		return key
 	}
@@ -131,7 +134,7 @@ func (gooseACPDialect) RehydrateState(task atypes.TaskRecord) map[string]any {
 		"dialect":    "goose",
 		"profile":    gooseProfile(task.RuntimeOptions),
 		"session_id": taskRemoteSessionID(task),
-		"sticky_key": gooseACPDialect{}.StickyKey(atypes.TaskEnvelope{ConversationID: task.ConversationID, RuntimeOptions: task.RuntimeOptions, TaskID: task.TaskID}),
+		"sticky_key": gooseACPDialect{}.StickyKey(atypes.TaskEnvelope{ThreadID: task.ThreadID, ConversationID: task.ConversationID, RuntimeOptions: task.RuntimeOptions, TaskID: task.TaskID}),
 	}
 }
 

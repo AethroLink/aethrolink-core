@@ -113,14 +113,9 @@ func (o *Orchestrator) getThreadRecord(ctx context.Context, threadID string) (at
 
 // appendTaskToThread records the created task as the next ordered thread turn.
 func (o *Orchestrator) appendTaskToThread(ctx context.Context, thread atypes.ThreadRecord, task atypes.TaskRecord) error {
-	turns, err := o.store.ListThreadTurns(ctx, thread.ThreadID)
-	if err != nil {
-		return err
-	}
 	now := atypes.NowUTC()
 	turn := atypes.ThreadTurn{
 		ThreadID:      thread.ThreadID,
-		TurnIndex:     int64(len(turns) + 1),
 		TaskID:        task.TaskID,
 		SenderAgentID: task.Sender,
 		TargetAgentID: task.ResolvedAgentID,
@@ -207,6 +202,7 @@ func cloneMap(in map[string]any) map[string]any {
 }
 
 func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequest) (atypes.TaskRecord, error) {
+	conversationSpecified := req.ConversationID != ""
 	req.Normalize()
 	var thread *atypes.ThreadRecord
 	if req.ThreadID != "" {
@@ -217,6 +213,11 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 		sender, target, err := validateThreadParticipants(loadedThread, req.Sender, req.TargetAgentID)
 		if err != nil {
 			return atypes.TaskRecord{}, err
+		}
+		if !conversationSpecified {
+			// Thread-bound tasks keep one stable conversation identity unless the
+			// caller overrides it explicitly for a special-case recovery flow.
+			req.ConversationID = loadedThread.ThreadID
 		}
 		req.Sender = sender
 		req.TargetAgentID = target
@@ -231,7 +232,7 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 		return atypes.TaskRecord{}, err
 	}
 	now := atypes.NowUTC()
-	task := atypes.TaskRecord{TaskID: atypes.NewID(), ConversationID: req.ConversationID, Sender: req.Sender, Intent: req.Intent, RequestedAgentID: req.TargetAgentID, ResolvedAgentID: resolvedRuntime, RuntimeOptions: cloneMap(runtimeOptions), PayloadArtifactID: payloadArtifact.ArtifactID, Status: atypes.TaskStatusCreated, CreatedAt: now, UpdatedAt: now}
+	task := atypes.TaskRecord{TaskID: atypes.NewID(), ThreadID: req.ThreadID, ConversationID: req.ConversationID, Sender: req.Sender, Intent: req.Intent, RequestedAgentID: req.TargetAgentID, ResolvedAgentID: resolvedRuntime, RuntimeOptions: cloneMap(runtimeOptions), PayloadArtifactID: payloadArtifact.ArtifactID, Status: atypes.TaskStatusCreated, CreatedAt: now, UpdatedAt: now}
 	if err := o.store.InsertTask(ctx, task); err != nil {
 		return atypes.TaskRecord{}, err
 	}
@@ -313,7 +314,7 @@ func (o *Orchestrator) runTask(taskID string, delivery atypes.DeliveryPolicy, pa
 		return
 	}
 	_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskDispatching, atypes.TaskStatusDispatching, atypes.EventSourceCore, "Dispatching task", map[string]any{"target_agent_id": task.ResolvedAgentID}, nil, nil, "")
-	envelope := atypes.TaskEnvelope{TaskID: task.TaskID, ConversationID: task.ConversationID, Sender: task.Sender, TargetAgentID: task.ResolvedAgentID, Intent: task.Intent, Payload: payload, RuntimeOptions: task.RuntimeOptions, Delivery: delivery, Trace: atypes.DefaultTraceContext(), Metadata: map[string]any{}}
+	envelope := atypes.TaskEnvelope{TaskID: task.TaskID, ThreadID: task.ThreadID, ConversationID: task.ConversationID, Sender: task.Sender, TargetAgentID: task.ResolvedAgentID, Intent: task.Intent, Payload: payload, RuntimeOptions: task.RuntimeOptions, Delivery: delivery, Trace: atypes.DefaultTraceContext(), Metadata: map[string]any{}}
 	handle, err := adapter.Submit(ctx, envelope, lease)
 	if err != nil {
 		taskErr := &atypes.TaskError{Reason: "submit_failed", Detail: err.Error()}
