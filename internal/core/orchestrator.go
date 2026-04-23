@@ -30,6 +30,10 @@ type subscriber struct {
 	ch     chan atypes.TaskEvent
 }
 
+type threadSessionReusePredictor interface {
+	PredictSessionReuse(ctx context.Context, task atypes.TaskEnvelope) (bool, error)
+}
+
 type Orchestrator struct {
 	discovery        atypes.DiscoveryProvider
 	store            *storage.SQLiteStore
@@ -498,6 +502,113 @@ func (o *Orchestrator) ListThreadTurns(ctx context.Context, threadID string) ([]
 		return nil, err
 	}
 	return o.store.ListThreadTurns(ctx, threadID)
+}
+
+func threadLastRemote(turns []atypes.ThreadTurn, agentID string) (string, string) {
+	for index := len(turns) - 1; index >= 0; index-- {
+		if turns[index].TargetAgentID == agentID {
+			return turns[index].RemoteSessionID, turns[index].RemoteExecutionID
+		}
+	}
+	return "", ""
+}
+
+func deriveThreadInterruptionReason(thread atypes.ThreadRecord, lastTask atypes.TaskRecord) string {
+	if thread.Status == atypes.ThreadStatusInterrupted {
+		switch lastTask.Status {
+		case atypes.TaskStatusAwaitingInput:
+			return "restart interrupted the thread while the last task was awaiting input"
+		case atypes.TaskStatusCreated, atypes.TaskStatusPendingLaunch, atypes.TaskStatusLaunching, atypes.TaskStatusReady, atypes.TaskStatusDispatching, atypes.TaskStatusRunning:
+			return "restart interrupted the thread while the last task was still in progress"
+		default:
+			return "thread was interrupted before the prior turn reached a terminal state"
+		}
+	}
+	if lastTask.Status == atypes.TaskStatusFailed && lastTask.LastError != nil && lastTask.LastError.Reason != "" {
+		return fmt.Sprintf("last task failed: %s", lastTask.LastError.Reason)
+	}
+	return ""
+}
+
+func (o *Orchestrator) predictThreadSessionReuse(ctx context.Context, thread atypes.ThreadRecord, sender, target string) bool {
+	spec, err := o.discovery.ResolveRuntime(ctx, target)
+	if err != nil {
+		return false
+	}
+	adapter, ok := o.adapters.Get(spec.Adapter)
+	if !ok {
+		return false
+	}
+	predictor, ok := adapter.(threadSessionReusePredictor)
+	if !ok {
+		return false
+	}
+	willReuse, err := predictor.PredictSessionReuse(ctx, atypes.TaskEnvelope{
+		TaskID:         atypes.NewID(),
+		ThreadID:       thread.ThreadID,
+		ConversationID: thread.ThreadID,
+		Sender:         sender,
+		TargetAgentID:  target,
+		RuntimeOptions: map[string]any{},
+	})
+	if err != nil {
+		return false
+	}
+	return willReuse
+}
+
+// InspectThread bundles persisted turns and continuity state for operator debugging.
+func (o *Orchestrator) InspectThread(ctx context.Context, threadID string) (atypes.ThreadInspection, error) {
+	thread, err := o.getThreadRecord(ctx, threadID)
+	if err != nil {
+		return atypes.ThreadInspection{}, err
+	}
+	turns, err := o.store.ListThreadTurns(ctx, threadID)
+	if err != nil {
+		return atypes.ThreadInspection{}, err
+	}
+	bindings, err := o.store.ListSessionBindingsByStickyKey(ctx, threadID)
+	if err != nil {
+		return atypes.ThreadInspection{}, err
+	}
+	continuity := make([]atypes.ThreadContinuitySide, 0, 2)
+	for _, agentID := range []string{thread.AgentAID, thread.AgentBID} {
+		lastRemoteSessionID, lastRemoteExecutionID := threadLastRemote(turns, agentID)
+		side := atypes.ThreadContinuitySide{
+			AgentID:               agentID,
+			LastRemoteSessionID:   lastRemoteSessionID,
+			LastRemoteExecutionID: lastRemoteExecutionID,
+			SessionBindings:       []atypes.SessionBinding{},
+		}
+		for _, binding := range bindings {
+			if binding.TargetID == agentID {
+				side.SessionBindings = append(side.SessionBindings, binding)
+			}
+		}
+		continuity = append(continuity, side)
+	}
+	sender, target, err := deriveThreadContinuationPair(thread, "", "")
+	if err != nil {
+		return atypes.ThreadInspection{}, err
+	}
+	nextContinue := atypes.ThreadNextContinue{
+		SenderAgentID:          sender,
+		TargetAgentID:          target,
+		WillReuseRemoteSession: o.predictThreadSessionReuse(ctx, thread, sender, target),
+	}
+	var lastTask atypes.TaskRecord
+	if thread.LastTaskID != "" {
+		if loadedTask, err := o.GetTask(ctx, thread.LastTaskID); err == nil {
+			lastTask = loadedTask
+		}
+	}
+	return atypes.ThreadInspection{
+		Thread:             thread,
+		Turns:              turns,
+		Continuity:         continuity,
+		NextContinue:       nextContinue,
+		InterruptionReason: deriveThreadInterruptionReason(thread, lastTask),
+	}, nil
 }
 
 // ContinueThread creates the next thread-bound task under an existing pair boundary.

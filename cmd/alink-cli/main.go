@@ -297,7 +297,7 @@ func (c cli) runThreadGet(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	body, err := c.get(joinURL(*server, "/v1/threads/"+*threadID))
+	body, err := c.get(joinURL(*server, "/v1/threads/"+*threadID+"/inspect"))
 	if err != nil {
 		return err
 	}

@@ -79,6 +79,43 @@ func (a *ACPAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease
 	return a.submitPrompt(ctx, task, lease, dialect)
 }
 
+// PredictSessionReuse checks whether the next ACP turn can reuse its persisted session.
+func (a *ACPAdapter) PredictSessionReuse(ctx context.Context, task atypes.TaskEnvelope) (bool, error) {
+	spec, err := a.discovery.ResolveRuntime(ctx, task.TargetAgentID)
+	if err != nil {
+		return false, err
+	}
+	dialect, err := a.resolveACPDialect(spec)
+	if err != nil {
+		return false, err
+	}
+	resolvedOptions := mergeAdapterOptions(spec.Defaults, task.RuntimeOptions)
+	stickyKey := dialect.StickyKey(atypes.TaskEnvelope{
+		ThreadID:       task.ThreadID,
+		ConversationID: task.ConversationID,
+		RuntimeOptions: resolvedOptions,
+		TaskID:         task.TaskID,
+	})
+	subcontextKey := dialect.SubcontextKey(resolvedOptions)
+	bound, exists, err := a.sessions.LoadBinding(ctx, task.TargetAgentID, subcontextKey, stickyKey)
+	if err != nil || !exists {
+		return false, err
+	}
+	if adaptersupport.SessionBindingStale(bound, adaptersupport.SessionIdleTimeout(resolvedOptions), atypes.NowUTC()) {
+		return false, nil
+	}
+	binding := dialect.WorkspaceBinding(atypes.TaskEnvelope{RuntimeOptions: resolvedOptions})
+	if binding.CWD == "" {
+		binding.CWD = "."
+	}
+	handshakeTimeout := acpSessionSetupTimeout(resolvedOptions)
+	if err := a.transport.Initialize(ctx, task.TargetAgentID, subcontextKey, map[string]any{"protocolVersion": 1}, handshakeTimeout); err != nil {
+		return false, nil
+	}
+	_, err = a.transport.LoadSession(ctx, task.TargetAgentID, subcontextKey, bound.RemoteSessionID, dialect.LoadSessionPayload(bound.RemoteSessionID, binding, resolvedOptions), handshakeTimeout)
+	return err == nil, nil
+}
+
 func (a *ACPAdapter) submitPrompt(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease, dialect acpDialect) (atypes.RemoteHandle, error) {
 	stickyKey := dialect.StickyKey(task)
 	scope := adaptersupport.SessionScope(task.TargetAgentID, lease.SubcontextKey, stickyKey)

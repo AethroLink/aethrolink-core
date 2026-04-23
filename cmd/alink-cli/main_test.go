@@ -125,6 +125,8 @@ func TestThreadCommandsUseThreadEndpoints(t *testing.T) {
 				t.Fatalf("decode thread continue request: %v", err)
 			}
 			_ = json.NewEncoder(w).Encode(map[string]any{"task": map[string]any{"task_id": "task-123"}})
+		case "/v1/threads/thread-123/inspect":
+			_ = json.NewEncoder(w).Encode(map[string]any{"thread": map[string]any{"thread_id": "thread-123"}, "continuity": []map[string]any{{"agent_id": "core"}}})
 		case "/v1/threads/thread-123/turns":
 			_ = json.NewEncoder(w).Encode(map[string]any{"turns": []map[string]any{{"turn_index": 1}}})
 		default:
@@ -140,6 +142,9 @@ func TestThreadCommandsUseThreadEndpoints(t *testing.T) {
 	if err := run([]string{"thread-continue", "--server", server.URL, "--thread-id", "thread-123", "--intent", "ui.review", "--text", "hello"}, &out, &errOut); err != nil {
 		t.Fatalf("run thread-continue: %v", err)
 	}
+	if err := run([]string{"thread-get", "--server", server.URL, "--thread-id", "thread-123"}, &out, &errOut); err != nil {
+		t.Fatalf("run thread-get: %v", err)
+	}
 	if err := run([]string{"thread-turns", "--server", server.URL, "--thread-id", "thread-123"}, &out, &errOut); err != nil {
 		t.Fatalf("run thread-turns: %v", err)
 	}
@@ -153,7 +158,7 @@ func TestThreadCommandsUseThreadEndpoints(t *testing.T) {
 	if continuePayload["text"] != "hello" {
 		t.Fatalf("expected thread-continue payload text, got %#v", continuePayload)
 	}
-	if len(paths) != 3 || paths[0] != "/v1/threads" || paths[1] != "/v1/threads/thread-123/continue" || paths[2] != "/v1/threads/thread-123/turns" {
+	if len(paths) != 4 || paths[0] != "/v1/threads" || paths[1] != "/v1/threads/thread-123/continue" || paths[2] != "/v1/threads/thread-123/inspect" || paths[3] != "/v1/threads/thread-123/turns" {
 		t.Fatalf("unexpected thread command paths: %#v", paths)
 	}
 }

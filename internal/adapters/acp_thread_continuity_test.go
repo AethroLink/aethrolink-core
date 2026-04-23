@@ -104,6 +104,73 @@ func TestACPAdapterReusesSameRemoteSessionAcrossThreadTurns(t *testing.T) {
 	}
 }
 
+func TestACPAdapterPredictSessionReuseRequiresFreshLoadableBinding(t *testing.T) {
+	adapter := newHermesAdapterForRecoveryTest(t)
+	lease, err := adapter.EnsureReady(context.Background(), "hermes_test", map[string]any{"executor": "mimoportal"})
+	if err != nil {
+		t.Fatalf("ensure ready: %v", err)
+	}
+	handle, err := adapter.Submit(context.Background(), atypes.TaskEnvelope{
+		TaskID:         atypes.NewID(),
+		ThreadID:       "thread-predict-reuse",
+		ConversationID: "conv-predict-reuse",
+		TargetAgentID:  "hermes_test",
+		Intent:         "research.topic",
+		Payload:        map[string]any{"text": "Say exactly REUSE"},
+		RuntimeOptions: map[string]any{"executor": "mimoportal"},
+		Delivery:       atypes.DefaultDeliveryPolicy(),
+	}, lease)
+	if err != nil {
+		t.Fatalf("submit reusable turn: %v", err)
+	}
+	drainTerminalEvents(t, adapter, handle)
+
+	willReuse, err := adapter.PredictSessionReuse(context.Background(), atypes.TaskEnvelope{
+		TaskID:         atypes.NewID(),
+		ThreadID:       "thread-predict-reuse",
+		ConversationID: "thread-predict-reuse",
+		TargetAgentID:  "hermes_test",
+		RuntimeOptions: map[string]any{"executor": "mimoportal"},
+	})
+	if err != nil {
+		t.Fatalf("predict reusable binding: %v", err)
+	}
+	if !willReuse {
+		t.Fatalf("expected reusable binding to predict true")
+	}
+
+	willReuse, err = adapter.PredictSessionReuse(context.Background(), atypes.TaskEnvelope{
+		TaskID:         atypes.NewID(),
+		ThreadID:       "thread-predict-reuse",
+		ConversationID: "thread-predict-reuse",
+		TargetAgentID:  "hermes_test",
+		RuntimeOptions: map[string]any{"executor": "mimoportal", "session_idle_timeout_ms": 1},
+	})
+	if err != nil {
+		t.Fatalf("predict stale binding: %v", err)
+	}
+	if willReuse {
+		t.Fatalf("expected stale binding prediction to be false")
+	}
+
+	if err := adapter.runtime.StopAll(context.Background()); err != nil {
+		t.Fatalf("stop runtime: %v", err)
+	}
+	willReuse, err = adapter.PredictSessionReuse(context.Background(), atypes.TaskEnvelope{
+		TaskID:         atypes.NewID(),
+		ThreadID:       "thread-predict-reuse",
+		ConversationID: "thread-predict-reuse",
+		TargetAgentID:  "hermes_test",
+		RuntimeOptions: map[string]any{"executor": "mimoportal"},
+	})
+	if err != nil {
+		t.Fatalf("predict missing worker binding: %v", err)
+	}
+	if willReuse {
+		t.Fatalf("expected missing worker prediction to be false")
+	}
+}
+
 func drainTerminalEvents(t *testing.T, adapter *ACPAdapter, handle atypes.RemoteHandle) {
 	t.Helper()
 	events, errs := adapter.StreamEvents(context.Background(), handle)
