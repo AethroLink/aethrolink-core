@@ -344,6 +344,25 @@ func (s *SQLiteStore) GetThread(ctx context.Context, threadID string) (atypes.Th
 	return scanThread(row)
 }
 
+// MarkInterruptedThreadsOnRestart makes non-terminal threads explicit after node restart.
+func (s *SQLiteStore) MarkInterruptedThreadsOnRestart(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE threads
+		SET status = ?, updated_at = ?
+		WHERE status = ?
+		  AND last_task_id IS NOT NULL
+		  AND EXISTS (
+			SELECT 1 FROM tasks
+			WHERE tasks.task_id = threads.last_task_id
+			  AND tasks.status NOT IN (?, ?, ?)
+		  )
+	`, string(atypes.ThreadStatusInterrupted), atypes.NowUTC().Format(time.RFC3339Nano), string(atypes.ThreadStatusActive), string(atypes.TaskStatusCompleted), string(atypes.TaskStatusFailed), string(atypes.TaskStatusCancelled))
+	if err != nil {
+		return fmt.Errorf("mark interrupted threads on restart: %w", err)
+	}
+	return nil
+}
+
 // AppendThreadTurn adds one ordered turn record to a persisted thread history.
 func (s *SQLiteStore) AppendThreadTurn(ctx context.Context, turn atypes.ThreadTurn) error {
 	_, err := s.db.ExecContext(ctx, `

@@ -21,8 +21,14 @@ import (
 
 func setupServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
 	t.Helper()
+	server, orchestrator, cleanup := setupServerAtRoot(t, t.TempDir())
+	t.Cleanup(cleanup)
+	return server, orchestrator
+}
+
+func setupServerAtRoot(t *testing.T, tmp string) (*httptest.Server, *core.Orchestrator, func()) {
+	t.Helper()
 	root := filepath.Clean(filepath.Join("..", ".."))
-	tmp := t.TempDir()
 	store, err := storage.Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -65,12 +71,12 @@ func setupServer(t *testing.T) (*httptest.Server, *core.Orchestrator) {
 	mockadapters.RegisterAll(adapterRegistry, agentService, runtimeManager)
 	orchestrator := core.NewOrchestrator(agentService, store, runtimeManager, adapterRegistry)
 	server := httptest.NewServer(NewServer(orchestrator, agentService))
-	t.Cleanup(func() {
+	cleanup := func() {
 		_ = orchestrator.StopAllRuntimeProcesses(context.Background())
 		server.Close()
 		_ = store.Close()
-	})
-	return server, orchestrator
+	}
+	return server, orchestrator, cleanup
 }
 
 func registerTestAgent(t *testing.T, svc *agents.Service, req atypes.AgentRegistrationRequest) {
@@ -464,5 +470,118 @@ func TestTaskCreateWithThreadIDRejectsInvalidAgentPair(t *testing.T) {
 		var body map[string]any
 		_ = json.NewDecoder(invalidTaskResp.Body).Decode(&body)
 		t.Fatalf("expected invalid thread pair rejection, got %d with body %#v", invalidTaskResp.StatusCode, body)
+	}
+}
+
+func TestThreadContinuationAfterRestartPreservesHistory(t *testing.T) {
+	root := t.TempDir()
+	server, _, cleanup := setupServerAtRoot(t, root)
+	createResp, err := http.Post(server.URL+"/v1/threads", "application/json", strings.NewReader(`{"agent_a_id":"mock_hermes","agent_b_id":"mock_openclaw"}`))
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	defer createResp.Body.Close()
+	var created struct {
+		Thread struct {
+			ThreadID string `json:"thread_id"`
+		} `json:"thread"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create thread response: %v", err)
+	}
+	continueResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"sender":"mock_hermes","intent":"ui.review","payload":{"mode":"success"}}`))
+	if err != nil {
+		t.Fatalf("continue thread before restart: %v", err)
+	}
+	defer continueResp.Body.Close()
+	var firstTask struct {
+		Task struct {
+			TaskID string `json:"task_id"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(continueResp.Body).Decode(&firstTask); err != nil {
+		t.Fatalf("decode first continue response: %v", err)
+	}
+	_ = waitForStatus(t, server.URL, firstTask.Task.TaskID, "completed")
+	cleanup()
+
+	restartedServer, restartedOrchestrator, restartedCleanup := setupServerAtRoot(t, root)
+	defer restartedCleanup()
+	secondContinueResp, err := http.Post(restartedServer.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"intent":"code.patch","payload":{"mode":"success"}}`))
+	if err != nil {
+		t.Fatalf("continue thread after restart: %v", err)
+	}
+	defer secondContinueResp.Body.Close()
+	var secondTask struct {
+		Task struct {
+			TaskID string `json:"task_id"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(secondContinueResp.Body).Decode(&secondTask); err != nil {
+		t.Fatalf("decode second continue response: %v", err)
+	}
+	_ = waitForStatus(t, restartedServer.URL, secondTask.Task.TaskID, "completed")
+	threadResp, err := http.Get(restartedServer.URL + "/v1/threads/" + created.Thread.ThreadID + "/turns")
+	if err != nil {
+		t.Fatalf("get restarted thread turns: %v", err)
+	}
+	defer threadResp.Body.Close()
+	var turns struct {
+		Turns []map[string]any `json:"turns"`
+	}
+	if err := json.NewDecoder(threadResp.Body).Decode(&turns); err != nil {
+		t.Fatalf("decode restarted turns response: %v", err)
+	}
+	if len(turns.Turns) != 2 {
+		t.Fatalf("expected 2 turns after restart continuation, got %d", len(turns.Turns))
+	}
+	_ = restartedOrchestrator
+}
+
+func TestRestartMarksAwaitingInputThreadInterrupted(t *testing.T) {
+	root := t.TempDir()
+	server, _, cleanup := setupServerAtRoot(t, root)
+	createResp, err := http.Post(server.URL+"/v1/threads", "application/json", strings.NewReader(`{"agent_a_id":"mock_hermes","agent_b_id":"mock_openclaw"}`))
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	defer createResp.Body.Close()
+	var created struct {
+		Thread struct {
+			ThreadID string `json:"thread_id"`
+		} `json:"thread"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create thread response: %v", err)
+	}
+	continueResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{"sender":"mock_hermes","intent":"ui.review","payload":{"mode":"await_then_resume"}}`))
+	if err != nil {
+		t.Fatalf("continue thread before restart: %v", err)
+	}
+	defer continueResp.Body.Close()
+	var firstTask struct {
+		Task struct {
+			TaskID string `json:"task_id"`
+		} `json:"task"`
+	}
+	if err := json.NewDecoder(continueResp.Body).Decode(&firstTask); err != nil {
+		t.Fatalf("decode awaiting-input continue response: %v", err)
+	}
+	_ = waitForStatus(t, server.URL, firstTask.Task.TaskID, "awaiting_input")
+	cleanup()
+
+	restartedServer, _, restartedCleanup := setupServerAtRoot(t, root)
+	defer restartedCleanup()
+	threadResp, err := http.Get(restartedServer.URL + "/v1/threads/" + created.Thread.ThreadID)
+	if err != nil {
+		t.Fatalf("get restarted thread: %v", err)
+	}
+	defer threadResp.Body.Close()
+	var thread map[string]any
+	if err := json.NewDecoder(threadResp.Body).Decode(&thread); err != nil {
+		t.Fatalf("decode restarted thread response: %v", err)
+	}
+	if thread["status"] != "interrupted" {
+		t.Fatalf("expected interrupted thread after restart, got %#v", thread["status"])
 	}
 }

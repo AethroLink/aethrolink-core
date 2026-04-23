@@ -40,7 +40,11 @@ type Orchestrator struct {
 }
 
 func NewOrchestrator(discovery atypes.DiscoveryProvider, store *storage.SQLiteStore, runtimeManager *runtime.Manager, adapterRegistry *adapters.Registry) *Orchestrator {
-	return &Orchestrator{discovery: discovery, store: store, runtime: runtimeManager, adapters: adapterRegistry, subscribers: map[int]subscriber{}}
+	o := &Orchestrator{discovery: discovery, store: store, runtime: runtimeManager, adapters: adapterRegistry, subscribers: map[int]subscriber{}}
+	// Restart reconciliation runs once at boot so persisted non-terminal threads
+	// are marked honestly before operators continue them.
+	_ = o.store.MarkInterruptedThreadsOnRestart(context.Background())
+	return o
 }
 
 func mergeMaps(base, override map[string]any) map[string]any {
