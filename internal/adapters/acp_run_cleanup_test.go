@@ -17,7 +17,7 @@ func TestACPAdapterRemovesRunAfterTerminalStream(t *testing.T) {
 	handle, err := adapter.Submit(context.Background(), atypes.TaskEnvelope{
 		TaskID:         atypes.NewID(),
 		ConversationID: atypes.NewID(),
-		TargetRuntime:  "hermes_test",
+		TargetAgentID:  "hermes_test",
 		Intent:         "research.topic",
 		Payload:        map[string]any{"text": "Say exactly CLEANUP"},
 		RuntimeOptions: map[string]any{"executor": "mimoportal"},

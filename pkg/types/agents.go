@@ -14,10 +14,8 @@ const DefaultAgentLeaseTTL = 5 * time.Minute
 type AgentRecord struct {
 	AgentID        string         `json:"agent_id"`
 	DisplayName    string         `json:"display_name"`
-	RuntimeKind    string         `json:"runtime_kind"`
 	TransportKind  string         `json:"transport_kind"`
 	Endpoint       string         `json:"endpoint,omitempty"`
-	RuntimeID      string         `json:"runtime_id,omitempty"`
 	Adapter        string         `json:"adapter,omitempty"`
 	Dialect        string         `json:"dialect,omitempty"`
 	Healthcheck    string         `json:"healthcheck,omitempty"`
@@ -48,10 +46,8 @@ func (r AgentRecord) WithEffectiveStatus(now time.Time) AgentRecord {
 type AgentRegistrationRequest struct {
 	AgentID         string         `json:"agent_id,omitempty"`
 	DisplayName     string         `json:"display_name"`
-	RuntimeKind     string         `json:"runtime_kind"`
 	TransportKind   string         `json:"transport_kind"`
 	Endpoint        string         `json:"endpoint,omitempty"`
-	RuntimeID       string         `json:"runtime_id,omitempty"`
 	Adapter         string         `json:"adapter,omitempty"`
 	Dialect         string         `json:"dialect,omitempty"`
 	Healthcheck     string         `json:"healthcheck,omitempty"`

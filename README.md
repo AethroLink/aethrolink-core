@@ -219,6 +219,24 @@ aethrolink-core/
 - See `docs/implementation_plan.md` for the build order.
 - See `docs/contracts.md` and `docs/adapter_contracts.md` for normative contracts.
 
+## Local Agent CLI
+
+Local agents should prefer `alink-cli` over handcrafting raw HTTP calls.
+
+To make `alink-cli` available on `PATH` for local agent runtimes:
+
+```bash
+go build -o /tmp/alink-cli ./cmd/alink-cli
+mkdir -p ~/.local/bin
+ln -sf /tmp/alink-cli ~/.local/bin/alink-cli
+```
+
+Verify:
+
+```bash
+command -v alink-cli
+```
+
 ## Status
 
 This repository is intended to start as a local-first runtime orchestration node and grow into a protocol node later without replacing the core.

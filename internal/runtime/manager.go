@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os/exec"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,7 +18,11 @@ import (
 )
 
 type ManagedProcess struct {
-	cmd *exec.Cmd
+	cmd        *exec.Cmd
+	exited     atomic.Bool
+	waitErrMsg atomic.Value
+	stderrMu   sync.Mutex
+	stderrTail string
 }
 
 func (p *ManagedProcess) PID() string {
@@ -29,6 +34,9 @@ func (p *ManagedProcess) PID() string {
 
 func (p *ManagedProcess) IsAlive() bool {
 	if p == nil || p.cmd == nil || p.cmd.Process == nil {
+		return false
+	}
+	if p.exited.Load() {
 		return false
 	}
 	if p.cmd.ProcessState == nil {
@@ -44,12 +52,65 @@ func (p *ManagedProcess) Kill() error {
 	return p.cmd.Process.Kill()
 }
 
+func (p *ManagedProcess) WaitErr() error {
+	if p == nil {
+		return nil
+	}
+	raw := p.waitErrMsg.Load()
+	if raw == nil {
+		return nil
+	}
+	msg, _ := raw.(string)
+	if msg == "" {
+		return nil
+	}
+	return fmt.Errorf("%s", msg)
+}
+
+func (p *ManagedProcess) AppendStderr(text string) {
+	if p == nil || text == "" {
+		return
+	}
+	p.stderrMu.Lock()
+	defer p.stderrMu.Unlock()
+	combined := strings.TrimSpace(p.stderrTail + "\n" + text)
+	lines := strings.Split(combined, "\n")
+	if len(lines) > 8 {
+		lines = lines[len(lines)-8:]
+	}
+	p.stderrTail = strings.Join(lines, "\n")
+}
+
+func (p *ManagedProcess) StderrTail() string {
+	if p == nil {
+		return ""
+	}
+	p.stderrMu.Lock()
+	defer p.stderrMu.Unlock()
+	return p.stderrTail
+}
+
+func monitorManagedProcess(cmd *exec.Cmd) *ManagedProcess {
+	proc := &ManagedProcess{cmd: cmd}
+	go func() {
+		err := cmd.Wait()
+		if err != nil {
+			proc.waitErrMsg.Store(err.Error())
+		} else {
+			proc.waitErrMsg.Store("")
+		}
+		proc.exited.Store(true)
+	}()
+	return proc
+}
+
 type StdioWorker struct {
 	process     *ManagedProcess
 	stdin       io.WriteCloser
 	writeMu     sync.Mutex
 	pendingMu   sync.Mutex
 	pending     map[uint64]chan map[string]any
+	closed      chan struct{}
 	subsMu      sync.Mutex
 	subscribers map[int]chan map[string]any
 	nextSubID   int
@@ -71,21 +132,36 @@ func spawnStdioWorker(command []string) (*StdioWorker, error) {
 	if err != nil {
 		return nil, fmt.Errorf("stdio stdout pipe: %w", err)
 	}
-	cmd.Stderr = nil
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stdio stderr pipe: %w", err)
+	}
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("start stdio worker: %w", err)
 	}
+	proc := monitorManagedProcess(cmd)
 	worker := &StdioWorker{
-		process:     &ManagedProcess{cmd: cmd},
+		process:     proc,
 		stdin:       stdin,
 		pending:     map[uint64]chan map[string]any{},
+		closed:      make(chan struct{}),
 		subscribers: map[int]chan map[string]any{},
 	}
 	go worker.readLoop(stdout)
+	go readProcessStderr(stderr, proc)
 	return worker, nil
 }
 
 func (w *StdioWorker) readLoop(stdout io.Reader) {
+	defer close(w.closed)
+	defer func() {
+		w.pendingMu.Lock()
+		for id, ch := range w.pending {
+			delete(w.pending, id)
+			close(ch)
+		}
+		w.pendingMu.Unlock()
+	}()
 	scanner := bufio.NewScanner(stdout)
 	for scanner.Scan() {
 		line := scanner.Bytes()
@@ -148,7 +224,10 @@ func (w *StdioWorker) RequestWithTimeout(method string, params map[string]any, t
 		return nil, err
 	}
 	select {
-	case resp := <-respCh:
+	case resp, ok := <-respCh:
+		if !ok {
+			return nil, w.exitErr()
+		}
 		if errVal, ok := resp["error"]; ok {
 			return nil, fmt.Errorf("rpc error: %v", errVal)
 		}
@@ -159,6 +238,8 @@ func (w *StdioWorker) RequestWithTimeout(method string, params map[string]any, t
 		return result, nil
 	case <-time.After(timeout):
 		return nil, fmt.Errorf("rpc timeout")
+	case <-w.closed:
+		return nil, w.exitErr()
 	}
 }
 
@@ -184,6 +265,26 @@ func (w *StdioWorker) IsAlive() bool { return w.process.IsAlive() }
 func (w *StdioWorker) PID() string   { return w.process.PID() }
 func (w *StdioWorker) Kill() error   { return w.process.Kill() }
 
+func (w *StdioWorker) exitErr() error {
+	if w == nil || w.process == nil {
+		return fmt.Errorf("stdio worker exited")
+	}
+	if tail := strings.TrimSpace(w.process.StderrTail()); tail != "" {
+		return fmt.Errorf("stdio worker exited: %s", tail)
+	}
+	if err := w.process.WaitErr(); err != nil {
+		return fmt.Errorf("stdio worker exited: %w", err)
+	}
+	return fmt.Errorf("stdio worker exited")
+}
+
+func readProcessStderr(stderr io.Reader, proc *ManagedProcess) {
+	scanner := bufio.NewScanner(stderr)
+	for scanner.Scan() {
+		proc.AppendStderr(scanner.Text())
+	}
+}
+
 type runtimeEntry struct {
 	lease   atypes.RuntimeLease
 	process *ManagedProcess
@@ -205,16 +306,16 @@ func NewManager(store *storage.SQLiteStore) *Manager {
 
 func (m *Manager) Store() *storage.SQLiteStore { return m.store }
 
-func entryKey(runtimeID, subcontextKey string) string {
+func entryKey(targetID, subcontextKey string) string {
 	if subcontextKey == "" {
 		subcontextKey = "default"
 	}
-	return runtimeID + "::" + subcontextKey
+	return targetID + "::" + subcontextKey
 }
 
-func (m *Manager) EnsureProcess(ctx context.Context, runtimeID, subcontextKey string, command []string, healthcheckURL string) (atypes.RuntimeLease, error) {
+func (m *Manager) EnsureProcess(ctx context.Context, targetID, subcontextKey string, command []string, healthcheckURL string) (atypes.RuntimeLease, error) {
 	m.mu.Lock()
-	if existing, ok := m.entries[entryKey(runtimeID, subcontextKey)]; ok {
+	if existing, ok := m.entries[entryKey(targetID, subcontextKey)]; ok {
 		if existing.process == nil || existing.process.IsAlive() {
 			m.mu.Unlock()
 			return existing.lease, nil
@@ -224,19 +325,19 @@ func (m *Manager) EnsureProcess(ctx context.Context, runtimeID, subcontextKey st
 
 	// Even command-less runtimes still get a lease entry so the rest of the stack
 	// can treat "ready" consistently across local and externally-managed runtimes.
-	lease := atypes.RuntimeLease{LeaseID: atypes.NewID(), RuntimeID: runtimeID, SubcontextKey: subcontextKey, Metadata: map[string]any{}, CreatedAt: atypes.NowUTC()}
+	lease := atypes.RuntimeLease{LeaseID: atypes.NewID(), TargetID: targetID, SubcontextKey: subcontextKey, Metadata: map[string]any{}, CreatedAt: atypes.NowUTC()}
 	if len(command) == 0 {
 		if err := m.store.InsertLease(ctx, lease); err != nil {
 			return atypes.RuntimeLease{}, err
 		}
 		m.mu.Lock()
-		m.entries[entryKey(runtimeID, subcontextKey)] = runtimeEntry{lease: lease}
+		m.entries[entryKey(targetID, subcontextKey)] = runtimeEntry{lease: lease}
 		m.mu.Unlock()
 		return lease, nil
 	}
 	// stdio runtimes are keyed by runtime+subcontext so executor/session scopes can be
 	// reused independently without bleeding state into each other.
-	launchID, err := m.store.InsertLaunchHistory(ctx, runtimeID, subcontextKey, command, "", "launching", "")
+	launchID, err := m.store.InsertLaunchHistory(ctx, targetID, subcontextKey, command, "", "launching", "")
 	if err != nil {
 		return atypes.RuntimeLease{}, err
 	}
@@ -245,7 +346,7 @@ func (m *Manager) EnsureProcess(ctx context.Context, runtimeID, subcontextKey st
 		_ = m.store.FinishLaunchHistory(ctx, launchID, "failed", err.Error())
 		return atypes.RuntimeLease{}, err
 	}
-	proc := &ManagedProcess{cmd: cmd}
+	proc := monitorManagedProcess(cmd)
 	lease.ProcessID = proc.PID()
 	if err := m.store.InsertLease(ctx, lease); err != nil {
 		return atypes.RuntimeLease{}, err
@@ -259,14 +360,14 @@ func (m *Manager) EnsureProcess(ctx context.Context, runtimeID, subcontextKey st
 		return atypes.RuntimeLease{}, err
 	}
 	m.mu.Lock()
-	m.entries[entryKey(runtimeID, subcontextKey)] = runtimeEntry{lease: lease, process: proc}
+	m.entries[entryKey(targetID, subcontextKey)] = runtimeEntry{lease: lease, process: proc}
 	m.mu.Unlock()
 	return lease, nil
 }
 
-func (m *Manager) EnsureStdioWorker(ctx context.Context, runtimeID, subcontextKey string, command []string) (atypes.RuntimeLease, *StdioWorker, error) {
+func (m *Manager) EnsureStdioWorker(ctx context.Context, targetID, subcontextKey string, command []string) (atypes.RuntimeLease, *StdioWorker, error) {
 	m.mu.Lock()
-	if existing, ok := m.entries[entryKey(runtimeID, subcontextKey)]; ok {
+	if existing, ok := m.entries[entryKey(targetID, subcontextKey)]; ok {
 		if existing.worker != nil && existing.worker.IsAlive() {
 			m.mu.Unlock()
 			return existing.lease, existing.worker, nil
@@ -274,7 +375,7 @@ func (m *Manager) EnsureStdioWorker(ctx context.Context, runtimeID, subcontextKe
 	}
 	m.mu.Unlock()
 
-	launchID, err := m.store.InsertLaunchHistory(ctx, runtimeID, subcontextKey, command, "", "launching", "")
+	launchID, err := m.store.InsertLaunchHistory(ctx, targetID, subcontextKey, command, "", "launching", "")
 	if err != nil {
 		return atypes.RuntimeLease{}, nil, err
 	}
@@ -283,7 +384,20 @@ func (m *Manager) EnsureStdioWorker(ctx context.Context, runtimeID, subcontextKe
 		_ = m.store.FinishLaunchHistory(ctx, launchID, "failed", err.Error())
 		return atypes.RuntimeLease{}, nil, err
 	}
-	lease := atypes.RuntimeLease{LeaseID: atypes.NewID(), RuntimeID: runtimeID, SubcontextKey: subcontextKey, ProcessID: worker.PID(), Metadata: map[string]any{}, CreatedAt: atypes.NowUTC()}
+	// Some ACP bridges fail immediately after startup (for example missing
+	// pairing/auth). Give the subprocess a brief grace window so launch failures
+	// are surfaced during readiness instead of later as broken pipes on submit.
+	time.Sleep(200 * time.Millisecond)
+	if !worker.IsAlive() {
+		waitErr := worker.process.WaitErr()
+		message := "stdio worker exited during startup"
+		if waitErr != nil {
+			message = waitErr.Error()
+		}
+		_ = m.store.FinishLaunchHistory(ctx, launchID, "failed", message)
+		return atypes.RuntimeLease{}, nil, fmt.Errorf("%s", message)
+	}
+	lease := atypes.RuntimeLease{LeaseID: atypes.NewID(), TargetID: targetID, SubcontextKey: subcontextKey, ProcessID: worker.PID(), Metadata: map[string]any{}, CreatedAt: atypes.NowUTC()}
 	if err := m.store.InsertLease(ctx, lease); err != nil {
 		return atypes.RuntimeLease{}, nil, err
 	}
@@ -291,26 +405,26 @@ func (m *Manager) EnsureStdioWorker(ctx context.Context, runtimeID, subcontextKe
 		return atypes.RuntimeLease{}, nil, err
 	}
 	m.mu.Lock()
-	m.entries[entryKey(runtimeID, subcontextKey)] = runtimeEntry{lease: lease, worker: worker}
+	m.entries[entryKey(targetID, subcontextKey)] = runtimeEntry{lease: lease, worker: worker}
 	m.mu.Unlock()
 	return lease, worker, nil
 }
 
-func (m *Manager) GetStdioWorker(runtimeID, subcontextKey string) *StdioWorker {
+func (m *Manager) GetStdioWorker(targetID, subcontextKey string) *StdioWorker {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	entry, ok := m.entries[entryKey(runtimeID, subcontextKey)]
+	entry, ok := m.entries[entryKey(targetID, subcontextKey)]
 	if !ok || entry.worker == nil || !entry.worker.IsAlive() {
 		return nil
 	}
 	return entry.worker
 }
 
-func (m *Manager) Stop(ctx context.Context, runtimeID, subcontextKey string) error {
+func (m *Manager) Stop(ctx context.Context, targetID, subcontextKey string) error {
 	m.mu.Lock()
-	entry, ok := m.entries[entryKey(runtimeID, subcontextKey)]
+	entry, ok := m.entries[entryKey(targetID, subcontextKey)]
 	if ok {
-		delete(m.entries, entryKey(runtimeID, subcontextKey))
+		delete(m.entries, entryKey(targetID, subcontextKey))
 	}
 	m.mu.Unlock()
 	if !ok {
@@ -345,12 +459,12 @@ func (m *Manager) StopAll(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) Health(runtimeID, subcontextKey string) map[string]any {
+func (m *Manager) Health(targetID, subcontextKey string) map[string]any {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	entry, ok := m.entries[entryKey(runtimeID, subcontextKey)]
+	entry, ok := m.entries[entryKey(targetID, subcontextKey)]
 	if !ok {
-		return map[string]any{"runtime_id": runtimeID, "healthy": false}
+		return map[string]any{"target_id": targetID, "healthy": false}
 	}
 	healthy := true
 	processID := ""
@@ -362,7 +476,7 @@ func (m *Manager) Health(runtimeID, subcontextKey string) map[string]any {
 		healthy = entry.process.IsAlive()
 		processID = entry.process.PID()
 	}
-	out := map[string]any{"runtime_id": runtimeID, "healthy": healthy, "lease_id": entry.lease.LeaseID}
+	out := map[string]any{"target_id": targetID, "healthy": healthy, "lease_id": entry.lease.LeaseID}
 	if processID != "" {
 		out["process_id"] = processID
 	}

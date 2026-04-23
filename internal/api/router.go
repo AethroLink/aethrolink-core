@@ -36,10 +36,10 @@ func NewServer(orchestrator *core.Orchestrator, agentService *agents.Service) ht
 	mux.HandleFunc("GET /v1/tasks/{task_id}/events", s.handleTaskEvents)
 	mux.HandleFunc("POST /v1/tasks/{task_id}/resume", s.handleResumeTask)
 	mux.HandleFunc("POST /v1/tasks/{task_id}/cancel", s.handleCancelTask)
-	mux.HandleFunc("GET /v1/runtimes", s.handleListRuntimes)
-	mux.HandleFunc("GET /v1/runtimes/{runtime_id}/health", s.handleRuntimeHealth)
-	mux.HandleFunc("POST /v1/runtimes/{runtime_id}/start", s.handleRuntimeStart)
-	mux.HandleFunc("POST /v1/runtimes/{runtime_id}/stop", s.handleRuntimeStop)
+	mux.HandleFunc("GET /v1/targets", s.handleListTargets)
+	mux.HandleFunc("GET /v1/targets/{agent_id}/health", s.handleTargetHealth)
+	mux.HandleFunc("POST /v1/targets/{agent_id}/start", s.handleTargetStart)
+	mux.HandleFunc("POST /v1/targets/{agent_id}/stop", s.handleTargetStop)
 	return mux
 }
 
@@ -227,17 +227,17 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, status, map[string]any{"task_id": task.TaskID, "status": task.Status})
 }
 
-func (s *Server) handleListRuntimes(w http.ResponseWriter, r *http.Request) {
-	runtimes, err := s.orchestrator.ListRuntimes(r.Context())
+func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
+	targets, err := s.orchestrator.ListTargets(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"runtimes": runtimes})
+	writeJSON(w, http.StatusOK, map[string]any{"targets": targets})
 }
 
-func (s *Server) handleRuntimeHealth(w http.ResponseWriter, r *http.Request) {
-	health, err := s.orchestrator.RuntimeHealth(r.Context(), r.PathValue("runtime_id"))
+func (s *Server) handleTargetHealth(w http.ResponseWriter, r *http.Request) {
+	health, err := s.orchestrator.TargetHealth(r.Context(), r.PathValue("agent_id"))
 	if err != nil {
 		writeError(w, core.ErrorStatus(err), err)
 		return
@@ -245,13 +245,13 @@ func (s *Server) handleRuntimeHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, health)
 }
 
-func (s *Server) handleRuntimeStart(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleTargetStart(w http.ResponseWriter, r *http.Request) {
 	runtimeOptions, err := decodeRuntimeControl(r.Context(), r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.orchestrator.StartRuntime(r.Context(), r.PathValue("runtime_id"), runtimeOptions)
+	result, err := s.orchestrator.StartTarget(r.Context(), r.PathValue("agent_id"), runtimeOptions)
 	if err != nil {
 		writeError(w, core.ErrorStatus(err), err)
 		return
@@ -259,13 +259,13 @@ func (s *Server) handleRuntimeStart(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, result)
 }
 
-func (s *Server) handleRuntimeStop(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleTargetStop(w http.ResponseWriter, r *http.Request) {
 	runtimeOptions, err := decodeRuntimeControl(r.Context(), r)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	result, err := s.orchestrator.StopRuntime(r.Context(), r.PathValue("runtime_id"), runtimeOptions)
+	result, err := s.orchestrator.StopTarget(r.Context(), r.PathValue("agent_id"), runtimeOptions)
 	if err != nil {
 		writeError(w, core.ErrorStatus(err), err)
 		return

@@ -17,8 +17,8 @@ func newACPSessionTransport(manager *runtime.Manager) atypes.LocalSessionTranspo
 	return &acpSessionTransport{manager: manager}
 }
 
-func (t *acpSessionTransport) Initialize(ctx context.Context, runtimeID, subcontextKey string, payload map[string]any, timeout time.Duration) error {
-	worker, err := t.worker(runtimeID, subcontextKey)
+func (t *acpSessionTransport) Initialize(ctx context.Context, targetID, subcontextKey string, payload map[string]any, timeout time.Duration) error {
+	worker, err := t.worker(targetID, subcontextKey)
 	if err != nil {
 		return err
 	}
@@ -26,8 +26,8 @@ func (t *acpSessionTransport) Initialize(ctx context.Context, runtimeID, subcont
 	return err
 }
 
-func (t *acpSessionTransport) OpenSession(ctx context.Context, runtimeID, subcontextKey string, payload map[string]any, timeout time.Duration) (string, error) {
-	worker, err := t.worker(runtimeID, subcontextKey)
+func (t *acpSessionTransport) OpenSession(ctx context.Context, targetID, subcontextKey string, payload map[string]any, timeout time.Duration) (string, error) {
+	worker, err := t.worker(targetID, subcontextKey)
 	if err != nil {
 		return "", err
 	}
@@ -38,8 +38,8 @@ func (t *acpSessionTransport) OpenSession(ctx context.Context, runtimeID, subcon
 	return sessionIDFromResult(result)
 }
 
-func (t *acpSessionTransport) LoadSession(ctx context.Context, runtimeID, subcontextKey string, sessionID string, payload map[string]any, timeout time.Duration) (string, error) {
-	worker, err := t.worker(runtimeID, subcontextKey)
+func (t *acpSessionTransport) LoadSession(ctx context.Context, targetID, subcontextKey string, sessionID string, payload map[string]any, timeout time.Duration) (string, error) {
+	worker, err := t.worker(targetID, subcontextKey)
 	if err != nil {
 		return "", err
 	}
@@ -54,8 +54,8 @@ func (t *acpSessionTransport) LoadSession(ctx context.Context, runtimeID, subcon
 	return resolved, nil
 }
 
-func (t *acpSessionTransport) Prompt(ctx context.Context, runtimeID, subcontextKey string, sessionID string, payload map[string]any, timeout time.Duration) error {
-	worker, err := t.worker(runtimeID, subcontextKey)
+func (t *acpSessionTransport) Prompt(ctx context.Context, targetID, subcontextKey string, sessionID string, payload map[string]any, timeout time.Duration) error {
+	worker, err := t.worker(targetID, subcontextKey)
 	if err != nil {
 		return err
 	}
@@ -63,8 +63,8 @@ func (t *acpSessionTransport) Prompt(ctx context.Context, runtimeID, subcontextK
 	return err
 }
 
-func (t *acpSessionTransport) Resume(ctx context.Context, runtimeID, subcontextKey string, sessionID string, payload map[string]any) error {
-	worker, err := t.worker(runtimeID, subcontextKey)
+func (t *acpSessionTransport) Resume(ctx context.Context, targetID, subcontextKey string, sessionID string, payload map[string]any) error {
+	worker, err := t.worker(targetID, subcontextKey)
 	if err != nil {
 		return err
 	}
@@ -72,8 +72,8 @@ func (t *acpSessionTransport) Resume(ctx context.Context, runtimeID, subcontextK
 	return err
 }
 
-func (t *acpSessionTransport) Cancel(ctx context.Context, runtimeID, subcontextKey string, sessionID string) error {
-	worker, err := t.worker(runtimeID, subcontextKey)
+func (t *acpSessionTransport) Cancel(ctx context.Context, targetID, subcontextKey string, sessionID string) error {
+	worker, err := t.worker(targetID, subcontextKey)
 	if err != nil {
 		return err
 	}
@@ -81,8 +81,8 @@ func (t *acpSessionTransport) Cancel(ctx context.Context, runtimeID, subcontextK
 	return err
 }
 
-func (t *acpSessionTransport) Stream(ctx context.Context, runtimeID, subcontextKey string) (<-chan map[string]any, func(), error) {
-	worker, err := t.worker(runtimeID, subcontextKey)
+func (t *acpSessionTransport) Stream(ctx context.Context, targetID, subcontextKey string) (<-chan map[string]any, func(), error) {
+	worker, err := t.worker(targetID, subcontextKey)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -90,8 +90,8 @@ func (t *acpSessionTransport) Stream(ctx context.Context, runtimeID, subcontextK
 	return ch, cancel, nil
 }
 
-func (t *acpSessionTransport) worker(runtimeID, subcontextKey string) (*runtime.StdioWorker, error) {
-	worker := t.manager.GetStdioWorker(runtimeID, subcontextKey)
+func (t *acpSessionTransport) worker(targetID, subcontextKey string) (*runtime.StdioWorker, error) {
+	worker := t.manager.GetStdioWorker(targetID, subcontextKey)
 	if worker == nil {
 		return nil, fmt.Errorf("missing stdio worker")
 	}

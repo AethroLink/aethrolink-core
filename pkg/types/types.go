@@ -115,7 +115,7 @@ func DefaultTraceContext() TraceContext {
 
 type TaskCreateRequest struct {
 	Sender         string          `json:"sender"`
-	TargetRuntime  string          `json:"target_runtime,omitempty"`
+	TargetAgentID  string          `json:"target_agent_id,omitempty"`
 	Intent         string          `json:"intent"`
 	Payload        map[string]any  `json:"payload"`
 	RuntimeOptions map[string]any  `json:"runtime_options,omitempty"`
@@ -150,7 +150,7 @@ type TaskEnvelope struct {
 	TaskID         string         `json:"task_id"`
 	ConversationID string         `json:"conversation_id"`
 	Sender         string         `json:"sender"`
-	TargetRuntime  string         `json:"target_runtime"`
+	TargetAgentID  string         `json:"target_agent_id"`
 	Intent         string         `json:"intent"`
 	Payload        map[string]any `json:"payload"`
 	RuntimeOptions map[string]any `json:"runtime_options,omitempty"`
@@ -161,7 +161,7 @@ type TaskEnvelope struct {
 
 type RuntimeLease struct {
 	LeaseID       string         `json:"lease_id"`
-	RuntimeID     string         `json:"runtime_id"`
+	TargetID      string         `json:"target_id"`
 	SubcontextKey string         `json:"subcontext_key,omitempty"`
 	ProcessID     string         `json:"process_id,omitempty"`
 	Metadata      map[string]any `json:"metadata,omitempty"`
@@ -171,7 +171,7 @@ type RuntimeLease struct {
 
 type RemoteHandle struct {
 	TaskID            string         `json:"task_id"`
-	RuntimeID         string         `json:"runtime_id"`
+	TargetID          string         `json:"target_id"`
 	Binding           string         `json:"binding"`
 	RemoteExecutionID string         `json:"remote_execution_id,omitempty"`
 	RemoteSessionID   string         `json:"remote_session_id,omitempty"`
@@ -185,7 +185,7 @@ type RemoteRef struct {
 }
 
 type SessionBinding struct {
-	RuntimeID       string         `json:"runtime_id"`
+	TargetID        string         `json:"target_id"`
 	SubcontextKey   string         `json:"subcontext_key"`
 	StickyKey       string         `json:"sticky_key"`
 	Adapter         string         `json:"adapter"`
@@ -207,8 +207,8 @@ type TaskRecord struct {
 	ConversationID    string         `json:"conversation_id"`
 	Sender            string         `json:"sender"`
 	Intent            string         `json:"intent"`
-	RequestedRuntime  string         `json:"requested_runtime,omitempty"`
-	ResolvedRuntime   string         `json:"resolved_runtime,omitempty"`
+	RequestedAgentID  string         `json:"requested_agent_id,omitempty"`
+	ResolvedAgentID   string         `json:"resolved_agent_id,omitempty"`
 	RuntimeOptions    map[string]any `json:"runtime_options,omitempty"`
 	PayloadArtifactID string         `json:"payload_artifact_id,omitempty"`
 	Status            TaskStatus     `json:"status"`
@@ -241,7 +241,7 @@ type ArtifactRef struct {
 
 type LaunchRecord struct {
 	LaunchID      string    `json:"launch_id"`
-	RuntimeID     string    `json:"runtime_id"`
+	TargetID      string    `json:"target_id"`
 	SubcontextKey string    `json:"subcontext_key,omitempty"`
 	Command       []string  `json:"command"`
 	PID           string    `json:"pid,omitempty"`
@@ -278,7 +278,7 @@ type LaunchSpec struct {
 }
 
 type RuntimeSpec struct {
-	RuntimeID    string         `json:"runtime_id" yaml:"-"`
+	TargetID     string         `json:"target_id" yaml:"-"`
 	Adapter      string         `json:"adapter" yaml:"adapter"`
 	Dialect      string         `json:"dialect,omitempty" yaml:"dialect,omitempty"`
 	Endpoint     string         `json:"endpoint,omitempty" yaml:"endpoint,omitempty"`
@@ -304,12 +304,12 @@ type RegistryFile struct {
 type RuntimeAdapter interface {
 	AdapterName() string
 	Capabilities(ctx context.Context) (map[string]any, error)
-	EnsureReady(ctx context.Context, runtimeID string, options map[string]any) (RuntimeLease, error)
+	EnsureReady(ctx context.Context, targetID string, options map[string]any) (RuntimeLease, error)
 	Submit(ctx context.Context, task TaskEnvelope, lease RuntimeLease) (RemoteHandle, error)
 	StreamEvents(ctx context.Context, handle RemoteHandle) (<-chan TaskEvent, <-chan error)
 	Resume(ctx context.Context, handle RemoteHandle, payload map[string]any) error
 	Cancel(ctx context.Context, handle RemoteHandle) error
-	Health(ctx context.Context, runtimeID string, options map[string]any) (map[string]any, error)
+	Health(ctx context.Context, targetID string, options map[string]any) (map[string]any, error)
 	RehydrateHandle(task TaskRecord, spec RuntimeSpec) (RemoteHandle, error)
 	SubcontextKey(spec RuntimeSpec, runtimeOptions map[string]any) string
 }
@@ -321,7 +321,7 @@ type TransportAdapter interface {
 }
 
 type DiscoveryProvider interface {
-	ResolveRuntime(ctx context.Context, runtimeID string) (RuntimeSpec, error)
+	ResolveRuntime(ctx context.Context, targetID string) (RuntimeSpec, error)
 	ListRuntimes(ctx context.Context) ([]RuntimeSpec, error)
 }
 
