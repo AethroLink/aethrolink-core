@@ -41,3 +41,50 @@ type ThreadTurn struct {
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
 }
+
+// ThreadCreateRequest creates a durable two-agent thread boundary.
+type ThreadCreateRequest struct {
+	AgentAID      string         `json:"agent_a_id"`
+	AgentBID      string         `json:"agent_b_id"`
+	ContinuityKey string         `json:"continuity_key,omitempty"`
+	Metadata      map[string]any `json:"metadata,omitempty"`
+}
+
+// Normalize fills defaults for thread creation without inventing participants.
+func (r *ThreadCreateRequest) Normalize() {
+	if r.Metadata == nil {
+		r.Metadata = map[string]any{}
+	}
+	if r.ContinuityKey == "" && r.AgentAID != "" && r.AgentBID != "" {
+		r.ContinuityKey = r.AgentAID + ":" + r.AgentBID
+	}
+}
+
+// ThreadContinueRequest describes one explicit next turn on a thread.
+type ThreadContinueRequest struct {
+	Sender         string          `json:"sender"`
+	TargetAgentID  string          `json:"target_agent_id,omitempty"`
+	Intent         string          `json:"intent"`
+	Payload        map[string]any  `json:"payload"`
+	RuntimeOptions map[string]any  `json:"runtime_options,omitempty"`
+	ConversationID string          `json:"conversation_id,omitempty"`
+	Delivery       *DeliveryPolicy `json:"delivery,omitempty"`
+	Metadata       map[string]any  `json:"metadata,omitempty"`
+}
+
+// Normalize fills default maps and delivery for explicit thread continuation.
+func (r *ThreadContinueRequest) Normalize() {
+	if r.Payload == nil {
+		r.Payload = map[string]any{}
+	}
+	if r.RuntimeOptions == nil {
+		r.RuntimeOptions = map[string]any{}
+	}
+	if r.Metadata == nil {
+		r.Metadata = map[string]any{}
+	}
+	if r.Delivery == nil {
+		d := DefaultDeliveryPolicy()
+		r.Delivery = &d
+	}
+}

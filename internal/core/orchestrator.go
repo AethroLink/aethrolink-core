@@ -20,6 +20,8 @@ var (
 	ErrTargetCannotSatisfyIntent = errors.New("target agent cannot satisfy intent")
 	ErrTaskNotFound              = errors.New("task not found")
 	ErrTaskNotAwaitable          = errors.New("task not awaitable")
+	ErrThreadNotFound            = errors.New("thread not found")
+	ErrThreadAgentPairInvalid    = errors.New("thread agent pair invalid")
 )
 
 type subscriber struct {
@@ -74,6 +76,61 @@ func supportsIntent(spec atypes.RuntimeSpec, intent string) bool {
 	return false
 }
 
+// validateThreadParticipants enforces that a thread-bound task stays inside its pair.
+func validateThreadParticipants(thread atypes.ThreadRecord, sender, target string) (string, string, error) {
+	if sender == "" {
+		return "", "", ErrThreadAgentPairInvalid
+	}
+	if sender != thread.AgentAID && sender != thread.AgentBID {
+		return "", "", ErrThreadAgentPairInvalid
+	}
+	if target == "" {
+		if sender == thread.AgentAID {
+			return sender, thread.AgentBID, nil
+		}
+		return sender, thread.AgentAID, nil
+	}
+	if target == sender {
+		return "", "", ErrThreadAgentPairInvalid
+	}
+	if target != thread.AgentAID && target != thread.AgentBID {
+		return "", "", ErrThreadAgentPairInvalid
+	}
+	return sender, target, nil
+}
+
+// getThreadRecord loads a thread and converts storage misses into core errors.
+func (o *Orchestrator) getThreadRecord(ctx context.Context, threadID string) (atypes.ThreadRecord, error) {
+	thread, err := o.store.GetThread(ctx, threadID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return atypes.ThreadRecord{}, ErrThreadNotFound
+		}
+		return atypes.ThreadRecord{}, err
+	}
+	return thread, nil
+}
+
+// appendTaskToThread records the created task as the next ordered thread turn.
+func (o *Orchestrator) appendTaskToThread(ctx context.Context, thread atypes.ThreadRecord, task atypes.TaskRecord) error {
+	turns, err := o.store.ListThreadTurns(ctx, thread.ThreadID)
+	if err != nil {
+		return err
+	}
+	now := atypes.NowUTC()
+	turn := atypes.ThreadTurn{
+		ThreadID:      thread.ThreadID,
+		TurnIndex:     int64(len(turns) + 1),
+		TaskID:        task.TaskID,
+		SenderAgentID: task.Sender,
+		TargetAgentID: task.ResolvedAgentID,
+		Status:        string(task.Status),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	return o.store.AppendThreadTurnAndUpdateThread(ctx, thread.ThreadID, turn, task.TaskID, task.Sender, task.ResolvedAgentID, now)
+}
+
 func (o *Orchestrator) routeRequest(ctx context.Context, req atypes.TaskCreateRequest) (string, map[string]any, error) {
 	if err := atypes.ValidateIntent(req.Intent); err != nil {
 		return "", nil, err
@@ -117,6 +174,9 @@ func (o *Orchestrator) appendEvent(ctx context.Context, taskID string, kind atyp
 	if err := o.store.AppendEventAndUpdateTask(ctx, event, remote, taskErr, resultArtifactID); err != nil {
 		return atypes.TaskEvent{}, err
 	}
+	if err := o.store.UpdateThreadTurnStatusByTaskID(ctx, taskID, string(state), remote); err != nil {
+		return atypes.TaskEvent{}, err
+	}
 	o.mu.RLock()
 	defer o.mu.RUnlock()
 	for _, sub := range o.subscribers {
@@ -148,6 +208,20 @@ func cloneMap(in map[string]any) map[string]any {
 
 func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequest) (atypes.TaskRecord, error) {
 	req.Normalize()
+	var thread *atypes.ThreadRecord
+	if req.ThreadID != "" {
+		loadedThread, err := o.getThreadRecord(ctx, req.ThreadID)
+		if err != nil {
+			return atypes.TaskRecord{}, err
+		}
+		sender, target, err := validateThreadParticipants(loadedThread, req.Sender, req.TargetAgentID)
+		if err != nil {
+			return atypes.TaskRecord{}, err
+		}
+		req.Sender = sender
+		req.TargetAgentID = target
+		thread = &loadedThread
+	}
 	resolvedRuntime, runtimeOptions, err := o.routeRequest(ctx, req)
 	if err != nil {
 		return atypes.TaskRecord{}, err
@@ -166,6 +240,11 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 	}
 	if _, err := o.appendEvent(ctx, task.TaskID, atypes.TaskEventTaskRouted, atypes.TaskStatusCreated, atypes.EventSourceCore, "Route resolved", map[string]any{"resolved_agent_id": resolvedRuntime, "runtime_options": runtimeOptions}, nil, nil, ""); err != nil {
 		return atypes.TaskRecord{}, err
+	}
+	if thread != nil {
+		if err := o.appendTaskToThread(ctx, *thread, task); err != nil {
+			return atypes.TaskRecord{}, err
+		}
 	}
 	go o.runTask(task.TaskID, *req.Delivery, cloneMap(req.Payload))
 	return o.GetTask(ctx, task.TaskID)
@@ -273,6 +352,64 @@ func (o *Orchestrator) runTask(taskID string, delivery atypes.DeliveryPolicy, pa
 			return
 		}
 	}
+}
+
+// CreateThread creates the durable pair boundary above individual task hops.
+func (o *Orchestrator) CreateThread(ctx context.Context, req atypes.ThreadCreateRequest) (atypes.ThreadRecord, error) {
+	req.Normalize()
+	if req.AgentAID == "" || req.AgentBID == "" || req.AgentAID == req.AgentBID {
+		return atypes.ThreadRecord{}, ErrThreadAgentPairInvalid
+	}
+	if _, err := o.discovery.ResolveRuntime(ctx, req.AgentAID); err != nil {
+		return atypes.ThreadRecord{}, ErrTargetAgentNotFound
+	}
+	if _, err := o.discovery.ResolveRuntime(ctx, req.AgentBID); err != nil {
+		return atypes.ThreadRecord{}, ErrTargetAgentNotFound
+	}
+	now := atypes.NowUTC()
+	thread := atypes.ThreadRecord{
+		ThreadID:      atypes.NewID(),
+		AgentAID:      req.AgentAID,
+		AgentBID:      req.AgentBID,
+		Status:        atypes.ThreadStatusActive,
+		ContinuityKey: req.ContinuityKey,
+		Metadata:      cloneMap(req.Metadata),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := o.store.InsertThread(ctx, thread); err != nil {
+		return atypes.ThreadRecord{}, err
+	}
+	return thread, nil
+}
+
+// GetThread returns one persisted thread record by id.
+func (o *Orchestrator) GetThread(ctx context.Context, threadID string) (atypes.ThreadRecord, error) {
+	return o.getThreadRecord(ctx, threadID)
+}
+
+// ListThreadTurns returns ordered turns for one persisted thread.
+func (o *Orchestrator) ListThreadTurns(ctx context.Context, threadID string) ([]atypes.ThreadTurn, error) {
+	if _, err := o.getThreadRecord(ctx, threadID); err != nil {
+		return nil, err
+	}
+	return o.store.ListThreadTurns(ctx, threadID)
+}
+
+// ContinueThread creates the next thread-bound task under an existing pair boundary.
+func (o *Orchestrator) ContinueThread(ctx context.Context, threadID string, req atypes.ThreadContinueRequest) (atypes.TaskRecord, error) {
+	req.Normalize()
+	return o.CreateTask(ctx, atypes.TaskCreateRequest{
+		ThreadID:       threadID,
+		Sender:         req.Sender,
+		TargetAgentID:  req.TargetAgentID,
+		Intent:         req.Intent,
+		Payload:        cloneMap(req.Payload),
+		RuntimeOptions: cloneMap(req.RuntimeOptions),
+		ConversationID: req.ConversationID,
+		Delivery:       req.Delivery,
+		Metadata:       cloneMap(req.Metadata),
+	})
 }
 
 func (o *Orchestrator) GetTask(ctx context.Context, taskID string) (atypes.TaskRecord, error) {
@@ -430,11 +567,11 @@ func asString(m map[string]any, key string) string {
 
 func ErrorStatus(err error) int {
 	switch {
-	case errors.Is(err, ErrTaskNotFound), errors.Is(err, ErrTargetAgentNotFound), errors.Is(err, ErrRouteNotFound):
+	case errors.Is(err, ErrTaskNotFound), errors.Is(err, ErrTargetAgentNotFound), errors.Is(err, ErrRouteNotFound), errors.Is(err, ErrThreadNotFound):
 		return 404
 	case errors.Is(err, ErrRouteAmbiguous):
 		return 409
-	case errors.Is(err, ErrTargetCannotSatisfyIntent), errors.Is(err, ErrTaskNotAwaitable):
+	case errors.Is(err, ErrTargetCannotSatisfyIntent), errors.Is(err, ErrTaskNotAwaitable), errors.Is(err, ErrThreadAgentPairInvalid):
 		return 422
 	default:
 		return 400

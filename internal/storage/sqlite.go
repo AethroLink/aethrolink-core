@@ -370,6 +370,59 @@ func (s *SQLiteStore) ListThreadTurns(ctx context.Context, threadID string) ([]a
 	return turns, nil
 }
 
+// AppendThreadTurnAndUpdateThread keeps thread state and ordered turn history coherent.
+func (s *SQLiteStore) AppendThreadTurnAndUpdateThread(ctx context.Context, threadID string, turn atypes.ThreadTurn, lastTaskID, lastActorAgentID, lastTargetAgentID string, updatedAt time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin thread mutation tx: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err := tx.ExecContext(ctx, `
+		UPDATE threads
+		SET last_task_id = ?, last_actor_agent_id = ?, last_target_agent_id = ?, status = ?, updated_at = ?
+		WHERE thread_id = ?
+	`, nullString(lastTaskID), nullString(lastActorAgentID), nullString(lastTargetAgentID), string(atypes.ThreadStatusActive), updatedAt.Format(time.RFC3339Nano), threadID); err != nil {
+		return fmt.Errorf("update thread progress: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO thread_turns(thread_id, turn_index, task_id, sender_agent_id, target_agent_id, remote_session_id, remote_execution_id, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, turn.ThreadID, turn.TurnIndex, nullString(turn.TaskID), turn.SenderAgentID, turn.TargetAgentID, nullString(turn.RemoteSessionID), nullString(turn.RemoteExecutionID), turn.Status, turn.CreatedAt.Format(time.RFC3339Nano), turn.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
+		return fmt.Errorf("append thread turn: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit thread mutation tx: %w", err)
+	}
+	committed = true
+	return nil
+}
+
+// UpdateThreadTurnStatusByTaskID mirrors task lifecycle changes onto thread history.
+func (s *SQLiteStore) UpdateThreadTurnStatusByTaskID(ctx context.Context, taskID string, status string, remote *atypes.RemoteHandle) error {
+	var remoteSessionID, remoteExecutionID any
+	if remote != nil {
+		remoteSessionID = nullString(remote.RemoteSessionID)
+		remoteExecutionID = nullString(remote.RemoteExecutionID)
+	}
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE thread_turns
+		SET status = ?,
+		    remote_session_id = COALESCE(?, remote_session_id),
+		    remote_execution_id = COALESCE(?, remote_execution_id),
+		    updated_at = ?
+		WHERE task_id = ?
+	`, status, remoteSessionID, remoteExecutionID, atypes.NowUTC().Format(time.RFC3339Nano), taskID)
+	if err != nil {
+		return fmt.Errorf("update thread turn status: %w", err)
+	}
+	return nil
+}
+
 func (s *SQLiteStore) UpdateTaskState(ctx context.Context, taskID string, status atypes.TaskStatus, remote *atypes.RemoteHandle, lastError *atypes.TaskError, resultArtifactID string) error {
 	var remoteBinding, remoteExecutionID, remoteSessionID any
 	if remote != nil {

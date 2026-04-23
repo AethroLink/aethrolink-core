@@ -114,6 +114,7 @@ func DefaultTraceContext() TraceContext {
 }
 
 type TaskCreateRequest struct {
+	ThreadID       string          `json:"thread_id,omitempty"`
 	Sender         string          `json:"sender"`
 	TargetAgentID  string          `json:"target_agent_id,omitempty"`
 	Intent         string          `json:"intent"`
