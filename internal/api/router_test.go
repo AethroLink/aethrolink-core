@@ -112,6 +112,39 @@ func waitForStatus(t *testing.T, baseURL, taskID, expected string) map[string]an
 	return nil
 }
 
+func waitForThreadTurns(t *testing.T, baseURL, threadID string, expected int, statuses ...string) []map[string]any {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(baseURL + "/v1/threads/" + threadID + "/turns")
+		if err == nil {
+			var body struct {
+				Turns []map[string]any `json:"turns"`
+			}
+			if json.NewDecoder(resp.Body).Decode(&body) == nil {
+				_ = resp.Body.Close()
+				if len(body.Turns) == expected {
+					allMatched := true
+					for index, status := range statuses {
+						if index >= len(body.Turns) || body.Turns[index]["status"] != status {
+							allMatched = false
+							break
+						}
+					}
+					if allMatched {
+						return body.Turns
+					}
+				}
+			} else {
+				_ = resp.Body.Close()
+			}
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %d thread turns", expected)
+	return nil
+}
+
 func TestHermesTaskCompletes(t *testing.T) {
 	server, orchestrator := setupServer(t)
 	payload := `{"intent":"code.patch","payload":{"mode":"success"}}`
@@ -587,5 +620,88 @@ func TestRestartMarksAwaitingInputThreadInterrupted(t *testing.T) {
 	}
 	if thread["status"] != "interrupted" {
 		t.Fatalf("expected interrupted thread after restart, got %#v", thread["status"])
+	}
+}
+
+func TestThreadAutoContinueRunsBoundedTurnsAndPersistsHistory(t *testing.T) {
+	server, orchestrator := setupServer(t)
+	defer func() { _ = orchestrator.StopAllRuntimeProcesses(context.Background()) }()
+
+	createResp, err := http.Post(server.URL+"/v1/threads", "application/json", strings.NewReader(`{"agent_a_id":"mock_hermes","agent_b_id":"mock_openclaw"}`))
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	defer createResp.Body.Close()
+	var created struct {
+		Thread struct {
+			ThreadID string `json:"thread_id"`
+		} `json:"thread"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode thread create response: %v", err)
+	}
+
+	continueResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{
+		"sender":"mock_hermes",
+		"intent":"ui.review",
+		"intent_by_agent":{"mock_hermes":"ui.review","mock_openclaw":"code.patch"},
+		"payload":{"mode":"success"},
+		"auto_continue":true,
+		"max_turns":3,
+		"stop_on_awaiting_input":true,
+		"stop_on_terminal_error":true
+	}`))
+	if err != nil {
+		t.Fatalf("auto-continue thread: %v", err)
+	}
+	defer continueResp.Body.Close()
+	if continueResp.StatusCode != http.StatusAccepted {
+		var body map[string]any
+		_ = json.NewDecoder(continueResp.Body).Decode(&body)
+		t.Fatalf("expected accepted auto-continue response, got %d with body %#v", continueResp.StatusCode, body)
+	}
+
+	turns := waitForThreadTurns(t, server.URL, created.Thread.ThreadID, 3, "completed", "completed", "completed")
+	if turns[0]["sender_agent_id"] != "mock_hermes" || turns[1]["sender_agent_id"] != "mock_openclaw" || turns[2]["sender_agent_id"] != "mock_hermes" {
+		t.Fatalf("expected bounded auto-continue to alternate senders, got %#v", turns)
+	}
+}
+
+func TestThreadAutoContinueStopsDeterministicallyOnTerminalError(t *testing.T) {
+	server, orchestrator := setupServer(t)
+	defer func() { _ = orchestrator.StopAllRuntimeProcesses(context.Background()) }()
+
+	createResp, err := http.Post(server.URL+"/v1/threads", "application/json", strings.NewReader(`{"agent_a_id":"mock_hermes","agent_b_id":"mock_openclaw"}`))
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	defer createResp.Body.Close()
+	var created struct {
+		Thread struct {
+			ThreadID string `json:"thread_id"`
+		} `json:"thread"`
+	}
+	if err := json.NewDecoder(createResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode thread create response: %v", err)
+	}
+
+	continueResp, err := http.Post(server.URL+"/v1/threads/"+created.Thread.ThreadID+"/continue", "application/json", strings.NewReader(`{
+		"sender":"mock_hermes",
+		"intent":"ui.review",
+		"intent_by_agent":{"mock_hermes":"ui.review","mock_openclaw":"code.patch"},
+		"payload":{"mode":"success"},
+		"payload_by_agent":{"mock_openclaw":{"mode":"submit_fail"}},
+		"auto_continue":true,
+		"max_turns":3,
+		"stop_on_terminal_error":true
+	}`))
+	if err != nil {
+		t.Fatalf("auto-continue thread with failure: %v", err)
+	}
+	defer continueResp.Body.Close()
+
+	turns := waitForThreadTurns(t, server.URL, created.Thread.ThreadID, 2, "completed", "failed")
+	if turns[1]["sender_agent_id"] != "mock_openclaw" {
+		t.Fatalf("expected second auto turn to come from mock_openclaw before stopping, got %#v", turns[1])
 	}
 }

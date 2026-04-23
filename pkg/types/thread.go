@@ -63,20 +63,33 @@ func (r *ThreadCreateRequest) Normalize() {
 
 // ThreadContinueRequest describes one explicit next turn on a thread.
 type ThreadContinueRequest struct {
-	Sender         string          `json:"sender"`
-	TargetAgentID  string          `json:"target_agent_id,omitempty"`
-	Intent         string          `json:"intent"`
-	Payload        map[string]any  `json:"payload"`
-	RuntimeOptions map[string]any  `json:"runtime_options,omitempty"`
-	ConversationID string          `json:"conversation_id,omitempty"`
-	Delivery       *DeliveryPolicy `json:"delivery,omitempty"`
-	Metadata       map[string]any  `json:"metadata,omitempty"`
+	Sender                string                    `json:"sender"`
+	TargetAgentID         string                    `json:"target_agent_id,omitempty"`
+	Intent                string                    `json:"intent"`
+	IntentByAgent         map[string]string         `json:"intent_by_agent,omitempty"`
+	Payload               map[string]any            `json:"payload"`
+	PayloadByAgent        map[string]map[string]any `json:"payload_by_agent,omitempty"`
+	RuntimeOptions        map[string]any            `json:"runtime_options,omitempty"`
+	ConversationID        string                    `json:"conversation_id,omitempty"`
+	Delivery              *DeliveryPolicy           `json:"delivery,omitempty"`
+	AutoContinue          bool                      `json:"auto_continue,omitempty"`
+	MaxTurns              int                       `json:"max_turns,omitempty"`
+	StopOnAwaitingInput   bool                      `json:"stop_on_awaiting_input,omitempty"`
+	StopOnSameActorRepeat bool                      `json:"stop_on_same_actor_repeat,omitempty"`
+	StopOnTerminalError   bool                      `json:"stop_on_terminal_error,omitempty"`
+	Metadata              map[string]any            `json:"metadata,omitempty"`
 }
 
 // Normalize fills default maps and delivery for explicit thread continuation.
 func (r *ThreadContinueRequest) Normalize() {
 	if r.Payload == nil {
 		r.Payload = map[string]any{}
+	}
+	if r.IntentByAgent == nil {
+		r.IntentByAgent = map[string]string{}
+	}
+	if r.PayloadByAgent == nil {
+		r.PayloadByAgent = map[string]map[string]any{}
 	}
 	if r.RuntimeOptions == nil {
 		r.RuntimeOptions = map[string]any{}
@@ -88,4 +101,23 @@ func (r *ThreadContinueRequest) Normalize() {
 		d := DefaultDeliveryPolicy()
 		r.Delivery = &d
 	}
+	if r.MaxTurns <= 0 {
+		r.MaxTurns = 1
+	}
+}
+
+// IntentForAgent returns the request intent for one actor with per-agent override.
+func (r ThreadContinueRequest) IntentForAgent(agentID string) string {
+	if intent, ok := r.IntentByAgent[agentID]; ok && intent != "" {
+		return intent
+	}
+	return r.Intent
+}
+
+// PayloadForAgent returns the request payload for one actor with per-agent override.
+func (r ThreadContinueRequest) PayloadForAgent(agentID string) map[string]any {
+	if payload, ok := r.PayloadByAgent[agentID]; ok && payload != nil {
+		return payload
+	}
+	return r.Payload
 }

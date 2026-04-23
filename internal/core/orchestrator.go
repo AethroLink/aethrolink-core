@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/aethrolink/aethrolink-core/internal/adapters"
 	"github.com/aethrolink/aethrolink-core/internal/runtime"
@@ -140,6 +141,77 @@ func deriveThreadContinuationPair(thread atypes.ThreadRecord, sender, target str
 		}
 	}
 	return validateThreadParticipants(thread, sender, target)
+}
+
+// autoContinueWaitTimeout keeps controller-owned loops bounded per turn.
+func autoContinueWaitTimeout(delivery *atypes.DeliveryPolicy) time.Duration {
+	if delivery != nil && delivery.TimeoutMS != nil && *delivery.TimeoutMS > 0 {
+		return time.Duration(*delivery.TimeoutMS) * time.Millisecond
+	}
+	return 60 * time.Second
+}
+
+// waitForThreadTaskStop polls durable task state until one turn reaches a stop boundary.
+func (o *Orchestrator) waitForThreadTaskStop(ctx context.Context, taskID string, timeout time.Duration) (atypes.TaskRecord, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		task, err := o.GetTask(ctx, taskID)
+		if err == nil && (task.Status == atypes.TaskStatusAwaitingInput || task.Status.IsTerminal()) {
+			return task, nil
+		}
+		select {
+		case <-ctx.Done():
+			return atypes.TaskRecord{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
+// continueThreadAutoHandoff runs a bounded controller-owned loop above persisted turns.
+func (o *Orchestrator) continueThreadAutoHandoff(threadID string, req atypes.ThreadContinueRequest, previous atypes.TaskRecord) {
+	ctx := context.Background()
+	lastTask := previous
+	for turn := 1; turn < req.MaxTurns; turn++ {
+		stoppedTask, err := o.waitForThreadTaskStop(ctx, lastTask.TaskID, autoContinueWaitTimeout(req.Delivery))
+		if err != nil {
+			return
+		}
+		if stoppedTask.Status == atypes.TaskStatusAwaitingInput {
+			return
+		}
+		if req.StopOnTerminalError && stoppedTask.Status != atypes.TaskStatusCompleted {
+			return
+		}
+		thread, err := o.getThreadRecord(ctx, threadID)
+		if err != nil {
+			return
+		}
+		sender, target, err := deriveThreadContinuationPair(thread, "", "")
+		if err != nil {
+			return
+		}
+		if req.StopOnSameActorRepeat && sender == lastTask.Sender {
+			return
+		}
+		nextTask, err := o.CreateTask(ctx, atypes.TaskCreateRequest{
+			ThreadID:       threadID,
+			Sender:         sender,
+			TargetAgentID:  target,
+			Intent:         req.IntentForAgent(sender),
+			Payload:        cloneMap(req.PayloadForAgent(sender)),
+			RuntimeOptions: cloneMap(req.RuntimeOptions),
+			ConversationID: req.ConversationID,
+			Delivery:       req.Delivery,
+			Metadata:       cloneMap(req.Metadata),
+		})
+		if err != nil {
+			return
+		}
+		lastTask = nextTask
+	}
 }
 
 // appendTaskToThread records the created task as the next ordered thread turn.
@@ -439,17 +511,24 @@ func (o *Orchestrator) ContinueThread(ctx context.Context, threadID string, req 
 	if err != nil {
 		return atypes.TaskRecord{}, err
 	}
-	return o.CreateTask(ctx, atypes.TaskCreateRequest{
+	task, err := o.CreateTask(ctx, atypes.TaskCreateRequest{
 		ThreadID:       threadID,
 		Sender:         sender,
 		TargetAgentID:  target,
-		Intent:         req.Intent,
-		Payload:        cloneMap(req.Payload),
+		Intent:         req.IntentForAgent(sender),
+		Payload:        cloneMap(req.PayloadForAgent(sender)),
 		RuntimeOptions: cloneMap(req.RuntimeOptions),
 		ConversationID: req.ConversationID,
 		Delivery:       req.Delivery,
 		Metadata:       cloneMap(req.Metadata),
 	})
+	if err != nil {
+		return atypes.TaskRecord{}, err
+	}
+	if req.AutoContinue && req.MaxTurns > 1 {
+		go o.continueThreadAutoHandoff(threadID, req, task)
+	}
+	return task, nil
 }
 
 func (o *Orchestrator) GetTask(ctx context.Context, taskID string) (atypes.TaskRecord, error) {
