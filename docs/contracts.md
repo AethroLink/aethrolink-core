@@ -779,7 +779,122 @@ Status: `202 Accepted`
 }
 ```
 
-## 4.10 GET /v1/node/health
+## 4.10 Static peer management
+
+These public control-plane endpoints let an operator register a peer and refresh cached peer-owned targets before submitting remote work. They are node-layer operations only; runtime adapters are not involved until a task is later routed to a cached remote target.
+
+### POST /v1/peers
+
+Register or update one static peer.
+
+Request:
+
+```json
+{
+  "peer_id": "node-b",
+  "display_name": "Research node",
+  "base_url": "http://127.0.0.1:9092",
+  "capabilities": ["node.targets"],
+  "metadata": {}
+}
+```
+
+Response status: `201 Created`
+
+```json
+{
+  "peer_id": "node-b",
+  "display_name": "Research node",
+  "base_url": "http://127.0.0.1:9092",
+  "status": "offline",
+  "capabilities": ["node.targets"],
+  "metadata": {},
+  "registered_at": "2026-04-24T08:00:00Z",
+  "updated_at": "2026-04-24T08:00:00Z",
+  "last_seen_at": "2026-04-24T08:00:00Z"
+}
+```
+
+Rules:
+
+- `peer_id` and `base_url` are required
+- registration stores a durable static peer without proving the peer is currently reachable
+- existing registrations preserve original registration time while updating mutable peer fields
+
+### GET /v1/peers
+
+Return the local static-peer registry without probing peers.
+
+Response status: `200 OK`
+
+```json
+[
+  {
+    "peer_id": "node-b",
+    "display_name": "Research node",
+    "base_url": "http://127.0.0.1:9092",
+    "status": "online",
+    "capabilities": ["node.targets"],
+    "metadata": {},
+    "registered_at": "2026-04-24T08:00:00Z",
+    "updated_at": "2026-04-24T08:01:00Z",
+    "last_seen_at": "2026-04-24T08:01:00Z"
+  }
+]
+```
+
+### POST /v1/peers/{peer_id}/sync
+
+Probe the peer node and refresh the local cache of peer-owned targets by calling the peer's `/v1/node/health` and `/v1/targets` endpoints.
+
+Response status: `200 OK`
+
+```json
+{
+  "peer": {
+    "peer_id": "node-b",
+    "display_name": "Research node",
+    "base_url": "http://127.0.0.1:9092",
+    "status": "online",
+    "capabilities": ["node.targets"],
+    "metadata": {},
+    "registered_at": "2026-04-24T08:00:00Z",
+    "updated_at": "2026-04-24T08:01:00Z",
+    "last_seen_at": "2026-04-24T08:01:00Z"
+  },
+  "targets": [
+    {
+      "peer_id": "node-b",
+      "target_id": "remote-coder",
+      "display_name": "Remote coder",
+      "capabilities": ["code.patch"],
+      "defaults": { "executor": "coder" },
+      "metadata": {},
+      "status": "available",
+      "synced_at": "2026-04-24T08:01:00Z"
+    }
+  ]
+}
+```
+
+Rules:
+
+- sync marks the peer online only after successful node health and target-list calls
+- cached targets are stored as `PeerTargetRecord` rows and then appear in `GET /v1/targets` with `owner: "remote"`
+- target payloads from the destination are copied into cache metadata/default fields but remain owned by the peer
+- a failed sync returns a control-plane error; existing cached targets are not treated as proof of current liveness
+
+CLI workflow:
+
+```bash
+alink-cli peer-add --server http://127.0.0.1:7777 --peer-id node-b --base-url http://127.0.0.1:9092 --display-name "Research node"
+alink-cli peer-sync --server http://127.0.0.1:7777 --peer-id node-b
+alink-cli targets --server http://127.0.0.1:7777
+```
+
+After sync, task submission to the cached target uses the normal public task API. The origin creates a local proxy task, submits to the destination node through static-peer HTTP relay, persists the destination binding, and mirrors destination events back onto the origin task.
+
+## 4.11 GET /v1/node/health
 
 Return the destination node identity and basic static-peer transport readiness.
 
@@ -802,7 +917,7 @@ Rules:
 - `ok` only means this HTTP node transport is reachable; it is not a runtime health guarantee
 - `protocol` is the static-peer HTTP node protocol version string for compatibility checks
 
-## 4.11 POST /v1/node/tasks
+## 4.12 POST /v1/node/tasks
 
 Accept a peer `task.submit` payload and create a destination-owned local task through the normal orchestrator/runtime adapter path.
 
@@ -851,7 +966,7 @@ Node transport errors use the typed `error` contract, not the public task API er
 - `422` destination target cannot satisfy requested intent
 - `500` unexpected destination execution setup failure
 
-## 4.12 GET /v1/node/tasks/{task_id}/events
+## 4.13 GET /v1/node/tasks/{task_id}/events
 
 Stream destination-owned task events as node protocol `task.event` frames.
 
@@ -878,7 +993,7 @@ Rules:
 
 Errors use typed `error` payloads with `message_type_hint: "task.event"`.
 
-## 4.13 Thread continuation across static peers
+## 4.14 Thread continuation across static peers
 
 The origin thread remains the operator-facing continuity record even when one participant is peer-owned. `ContinueThread` still routes through normal task creation: local participants dispatch locally, while remote participants create an origin proxy task and submit `task.submit` to the destination node.
 
@@ -909,7 +1024,7 @@ Inspection rules:
 - bounded auto-handoff remains origin-orchestrator owned; `max_turns` limits cross-node continuation the same way it limits local continuation
 - remote session reuse prediction is best-effort and must not be treated as a distributed scheduling guarantee
 
-## 4.14 Restart-visible remote relay interruption
+## 4.15 Restart-visible remote relay interruption
 
 On origin node startup, persisted `remote_task_bindings` rows with non-terminal relay status are treated as interrupted. The origin must not claim that remote work resumed automatically after process restart because the origin may have missed destination terminal events while offline.
 
@@ -923,7 +1038,7 @@ Restart reconciliation rules:
 
 This is an honest recovery marker, not exactly-once distributed execution recovery.
 
-## 4.15 POST /v1/node/tasks/{task_id}/resume
+## 4.16 POST /v1/node/tasks/{task_id}/resume
 
 Apply a peer `task.resume` control message to a destination-owned task.
 
@@ -941,7 +1056,7 @@ Status: `202 Accepted`
 
 Errors use typed `error` payloads with `message_type_hint: "task.resume"`.
 
-## 4.16 POST /v1/node/tasks/{task_id}/cancel
+## 4.17 POST /v1/node/tasks/{task_id}/cancel
 
 Apply a peer `task.cancel` control message to a destination-owned task.
 

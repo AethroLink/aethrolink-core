@@ -274,3 +274,50 @@ func TestAgentsAndTargetsCommands(t *testing.T) {
 		t.Fatalf("unexpected request paths: %#v", paths)
 	}
 }
+
+func TestPeerCommandsUsePeerEndpoints(t *testing.T) {
+	var paths []string
+	var addBody map[string]any
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		switch r.URL.Path {
+		case "/v1/peers":
+			if r.Method == http.MethodPost {
+				if err := json.NewDecoder(r.Body).Decode(&addBody); err != nil {
+					t.Fatalf("decode peer add body: %v", err)
+				}
+				_ = json.NewEncoder(w).Encode(map[string]any{"peer": map[string]any{"peer_id": "peer-b", "base_url": "http://node-b"}})
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{"peers": []map[string]any{{"peer_id": "peer-b"}}})
+		case "/v1/peers/peer-b/sync":
+			_ = json.NewEncoder(w).Encode(map[string]any{"peer": map[string]any{"peer_id": "peer-b"}, "targets": []map[string]any{{"agent_id": "remote-coder"}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	if err := run([]string{"peer-add", "--server", server.URL, "--peer-id", "peer-b", "--display-name", "Node B", "--base-url", "http://node-b"}, &out, &errOut); err != nil {
+		t.Fatalf("run peer-add: %v", err)
+	}
+	if err := run([]string{"peer-list", "--server", server.URL}, &out, &errOut); err != nil {
+		t.Fatalf("run peer-list: %v", err)
+	}
+	if err := run([]string{"peer-sync", "--server", server.URL, "--peer-id", "peer-b"}, &out, &errOut); err != nil {
+		t.Fatalf("run peer-sync: %v", err)
+	}
+	if addBody["peer_id"] != "peer-b" || addBody["base_url"] != "http://node-b" {
+		t.Fatalf("unexpected peer-add body: %#v", addBody)
+	}
+	want := []string{"/v1/peers", "/v1/peers", "/v1/peers/peer-b/sync"}
+	if len(paths) != len(want) {
+		t.Fatalf("unexpected peer command paths: %#v", paths)
+	}
+	for i := range want {
+		if paths[i] != want[i] {
+			t.Fatalf("unexpected peer command paths: %#v", paths)
+		}
+	}
+}

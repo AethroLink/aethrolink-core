@@ -45,7 +45,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 
 func (c cli) run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: alink-cli <register|ensure-registered|heartbeat|call|task-get|task-events|thread-create|thread-get|thread-continue|thread-turns|agents|targets>")
+		return errors.New("usage: alink-cli <register|ensure-registered|heartbeat|call|task-get|task-events|thread-create|thread-get|thread-continue|thread-turns|agents|targets|peer-add|peer-list|peer-sync>")
 	}
 	switch args[0] {
 	case "register":
@@ -72,6 +72,12 @@ func (c cli) run(args []string) error {
 		return c.runAgents(args[1:])
 	case "targets":
 		return c.runTargets(args[1:])
+	case "peer-add":
+		return c.runPeerAdd(args[1:])
+	case "peer-list":
+		return c.runPeerList(args[1:])
+	case "peer-sync":
+		return c.runPeerSync(args[1:])
 	default:
 		return fmt.Errorf("unknown command: %s", args[0])
 	}
@@ -294,6 +300,65 @@ func (c cli) runTargets(args []string) error {
 		return err
 	}
 	body, err := c.get(joinURL(*server, "/v1/targets"))
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(c.stdout, string(body))
+	return nil
+}
+
+// runPeerAdd registers a static peer without contacting runtime adapters.
+func (c cli) runPeerAdd(args []string) error {
+	fs := flag.NewFlagSet("peer-add", flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	peerID := fs.String("peer-id", "", "peer node id")
+	displayName := fs.String("display-name", "", "peer display name")
+	baseURL := fs.String("base-url", "", "peer base URL")
+	capabilities := fs.String("capabilities", "", "comma-separated peer capabilities")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	req := atypes.PeerUpsertRequest{
+		PeerID:       *peerID,
+		DisplayName:  *displayName,
+		BaseURL:      *baseURL,
+		Capabilities: csvList(*capabilities),
+	}
+	body, err := c.postJSON(joinURL(*server, "/v1/peers"), req)
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(c.stdout, string(body))
+	return nil
+}
+
+// runPeerList reads the static peer registry without probing peer liveness.
+func (c cli) runPeerList(args []string) error {
+	fs := flag.NewFlagSet("peer-list", flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	body, err := c.get(joinURL(*server, "/v1/peers"))
+	if err != nil {
+		return err
+	}
+	_, _ = fmt.Fprintln(c.stdout, string(body))
+	return nil
+}
+
+// runPeerSync refreshes cached peer-owned targets through node transport.
+func (c cli) runPeerSync(args []string) error {
+	fs := flag.NewFlagSet("peer-sync", flag.ContinueOnError)
+	fs.SetOutput(c.stderr)
+	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	peerID := fs.String("peer-id", "", "peer node id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	body, err := c.postJSON(joinURL(*server, "/v1/peers/"+*peerID+"/sync"), map[string]any{})
 	if err != nil {
 		return err
 	}

@@ -56,6 +56,9 @@ func NewServerWithNodeID(orchestrator *core.Orchestrator, agentService *agents.S
 	mux.HandleFunc("GET /v1/threads/{thread_id}/inspect", s.handleInspectThread)
 	mux.HandleFunc("GET /v1/threads/{thread_id}/turns", s.handleListThreadTurns)
 	mux.HandleFunc("POST /v1/threads/{thread_id}/continue", s.handleContinueThread)
+	mux.HandleFunc("POST /v1/peers", s.handleAddPeer)
+	mux.HandleFunc("GET /v1/peers", s.handleListPeers)
+	mux.HandleFunc("POST /v1/peers/{peer_id}/sync", s.handleSyncPeer)
 	mux.HandleFunc("GET /v1/targets", s.handleListTargets)
 	mux.HandleFunc("GET /v1/targets/{agent_id}/health", s.handleTargetHealth)
 	mux.HandleFunc("POST /v1/targets/{agent_id}/start", s.handleTargetStart)
@@ -464,6 +467,41 @@ func (s *Server) handleCancelTask(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, map[string]any{"task_id": task.TaskID, "status": task.Status})
+}
+
+// handleAddPeer persists a static peer for explicit operator-controlled sync.
+func (s *Server) handleAddPeer(w http.ResponseWriter, r *http.Request) {
+	var req atypes.PeerUpsertRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	peer, err := s.orchestrator.AddPeer(r.Context(), req)
+	if err != nil {
+		writeError(w, core.ErrorStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, peer)
+}
+
+// handleListPeers returns the local static-peer registry without probing peers.
+func (s *Server) handleListPeers(w http.ResponseWriter, r *http.Request) {
+	peers, err := s.orchestrator.ListPeers(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"peers": peers})
+}
+
+// handleSyncPeer refreshes the cached target view from a registered peer node.
+func (s *Server) handleSyncPeer(w http.ResponseWriter, r *http.Request) {
+	result, err := s.orchestrator.SyncPeerTargets(r.Context(), r.PathValue("peer_id"))
+	if err != nil {
+		writeError(w, core.ErrorStatus(err), err)
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {

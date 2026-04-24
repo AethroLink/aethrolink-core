@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -99,6 +100,28 @@ func (s *SQLiteStore) UpsertPeerTarget(ctx context.Context, target atypes.PeerTa
 	`, target.PeerID, target.TargetID, target.DisplayName, string(capabilitiesJSON), string(defaultsJSON), string(metadataJSON), string(target.Status), target.SyncedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("upsert peer target: %w", err)
+	}
+	return nil
+}
+
+// DeletePeerTargetsExcept removes cached peer targets absent from the latest sync set.
+func (s *SQLiteStore) DeletePeerTargetsExcept(ctx context.Context, peerID string, targetIDs []string) error {
+	if len(targetIDs) == 0 {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM peer_targets WHERE peer_id = ?`, peerID); err != nil {
+			return fmt.Errorf("delete peer targets: %w", err)
+		}
+		return nil
+	}
+	placeholders := make([]string, len(targetIDs))
+	args := make([]any, 0, len(targetIDs)+1)
+	args = append(args, peerID)
+	for i, targetID := range targetIDs {
+		placeholders[i] = "?"
+		args = append(args, targetID)
+	}
+	query := fmt.Sprintf(`DELETE FROM peer_targets WHERE peer_id = ? AND target_id NOT IN (%s)`, strings.Join(placeholders, ","))
+	if _, err := s.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("delete stale peer targets: %w", err)
 	}
 	return nil
 }

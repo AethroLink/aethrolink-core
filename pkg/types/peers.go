@@ -23,6 +23,15 @@ type PeerRecord struct {
 	LastSeenAt   time.Time      `json:"last_seen_at"`
 }
 
+// PeerUpsertRequest is the operator-facing static peer registration payload.
+type PeerUpsertRequest struct {
+	PeerID       string         `json:"peer_id"`
+	DisplayName  string         `json:"display_name,omitempty"`
+	BaseURL      string         `json:"base_url"`
+	Capabilities []string       `json:"capabilities,omitempty"`
+	Metadata     map[string]any `json:"metadata,omitempty"`
+}
+
 // PeerTargetStatus describes a cached exported target independently of peer liveness.
 type PeerTargetStatus string
 
@@ -41,6 +50,12 @@ type PeerTargetRecord struct {
 	Metadata     map[string]any   `json:"metadata,omitempty"`
 	Status       PeerTargetStatus `json:"status"`
 	SyncedAt     time.Time        `json:"synced_at"`
+}
+
+// PeerSyncResponse reports the target cache refresh result for one peer.
+type PeerSyncResponse struct {
+	Peer    PeerRecord         `json:"peer"`
+	Targets []PeerTargetRecord `json:"targets"`
 }
 
 const (

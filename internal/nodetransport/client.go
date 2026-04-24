@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/aethrolink/aethrolink-core/internal/nodeproto"
+	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
 
 // NodeError preserves typed peer failures for origin-side routing decisions.
@@ -45,6 +46,17 @@ func (c *HTTPClient) Health(ctx context.Context) (nodeproto.NodeHealthResponse, 
 		return nodeproto.NodeHealthResponse{}, err
 	}
 	return out, nil
+}
+
+// ListTargets reads the peer's exported discovery surface for target-cache sync.
+func (c *HTTPClient) ListTargets(ctx context.Context) ([]atypes.RuntimeSpec, error) {
+	var out struct {
+		Targets []atypes.RuntimeSpec `json:"targets"`
+	}
+	if err := c.doJSON(ctx, http.MethodGet, "/v1/targets", nil, http.StatusOK, &out); err != nil {
+		return nil, err
+	}
+	return out.Targets, nil
 }
 
 // SubmitTask relays a local proxy task to the destination node.
