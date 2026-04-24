@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"net/url"
@@ -60,15 +61,24 @@ func (o *Orchestrator) ListPeers(ctx context.Context) ([]atypes.PeerRecord, erro
 func (o *Orchestrator) SyncPeerTargets(ctx context.Context, peerID string) (atypes.PeerSyncResponse, error) {
 	peer, err := o.store.GetPeer(ctx, peerID)
 	if err != nil {
-		return atypes.PeerSyncResponse{}, ErrPeerNotFound
+		if errors.Is(err, sql.ErrNoRows) {
+			return atypes.PeerSyncResponse{}, ErrPeerNotFound
+		}
+		return atypes.PeerSyncResponse{}, err
 	}
 	client := nodetransport.NewHTTPClient(peer.BaseURL, o.nodeID, nil)
 	health, err := client.Health(ctx)
 	if err != nil {
+		if offlineErr := o.markPeerOfflineAfterSyncFailure(ctx, peer); offlineErr != nil {
+			return atypes.PeerSyncResponse{}, offlineErr
+		}
 		return atypes.PeerSyncResponse{}, fmt.Errorf("peer health: %w", err)
 	}
 	targets, err := client.ListTargets(ctx)
 	if err != nil {
+		if offlineErr := o.markPeerOfflineAfterSyncFailure(ctx, peer); offlineErr != nil {
+			return atypes.PeerSyncResponse{}, offlineErr
+		}
 		return atypes.PeerSyncResponse{}, fmt.Errorf("peer targets: %w", err)
 	}
 	now := atypes.NowUTC()
@@ -108,6 +118,14 @@ func (o *Orchestrator) SyncPeerTargets(ctx context.Context, peerID string) (atyp
 		return atypes.PeerSyncResponse{}, err
 	}
 	return atypes.PeerSyncResponse{Peer: peer, Targets: cached}, nil
+}
+
+// markPeerOfflineAfterSyncFailure records failed peer probes for operator-visible liveness.
+func (o *Orchestrator) markPeerOfflineAfterSyncFailure(ctx context.Context, peer atypes.PeerRecord) error {
+	now := atypes.NowUTC()
+	peer.Status = atypes.PeerStatusOffline
+	peer.UpdatedAt = now
+	return o.store.UpsertPeer(ctx, peer)
 }
 
 // normalizePeerBaseURL requires an absolute HTTP(S) address for node transport.
