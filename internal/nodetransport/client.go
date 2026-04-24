@@ -79,20 +79,29 @@ func (c *HTTPClient) CancelTask(ctx context.Context, req nodeproto.TaskCancelReq
 
 // StreamTaskEvents drains the Phase 3 SSE event stream into typed frames.
 func (c *HTTPClient) StreamTaskEvents(ctx context.Context, destinationTaskID string, originProxyTaskID string) ([]nodeproto.TaskEventFrame, error) {
+	var frames []nodeproto.TaskEventFrame
+	err := c.StreamTaskEventsFunc(ctx, destinationTaskID, originProxyTaskID, func(frame nodeproto.TaskEventFrame) error {
+		frames = append(frames, frame)
+		return nil
+	})
+	return frames, err
+}
+
+// StreamTaskEventsFunc invokes onFrame for each SSE frame as soon as it arrives.
+func (c *HTTPClient) StreamTaskEventsFunc(ctx context.Context, destinationTaskID string, originProxyTaskID string, onFrame func(nodeproto.TaskEventFrame) error) error {
 	path := fmt.Sprintf("/v1/node/tasks/%s/events?origin_proxy_task_id=%s", url.PathEscape(destinationTaskID), url.QueryEscape(originProxyTaskID))
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+path, nil)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, decodeNodeError(resp)
+		return decodeNodeError(resp)
 	}
-	var frames []nodeproto.TaskEventFrame
 	scanner := bufio.NewScanner(resp.Body)
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -101,11 +110,15 @@ func (c *HTTPClient) StreamTaskEvents(ctx context.Context, destinationTaskID str
 		}
 		var frame nodeproto.TaskEventFrame
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame); err != nil {
-			return nil, err
+			return err
 		}
-		frames = append(frames, frame)
+		if onFrame != nil {
+			if err := onFrame(frame); err != nil {
+				return err
+			}
+		}
 	}
-	return frames, scanner.Err()
+	return scanner.Err()
 }
 
 // doJSON sends one JSON request and decodes either the expected response or a typed error.

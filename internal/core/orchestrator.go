@@ -220,12 +220,15 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 		thread = &loadedThread
 	}
 	if req.TargetAgentID != "" {
-		remoteSpec, ok, err := o.resolveRemoteRuntime(ctx, req.TargetAgentID)
-		if err != nil {
-			return atypes.TaskRecord{}, err
-		}
-		if ok {
-			return o.createRemoteProxyTask(ctx, req, remoteSpec, thread)
+		// Local target IDs win because peer target IDs are not globally unique.
+		if localSpec, err := o.discovery.ResolveRuntime(ctx, req.TargetAgentID); err != nil || !isDispatchableRuntime(localSpec) {
+			remoteSpec, ok, err := o.resolveRemoteRuntime(ctx, req.TargetAgentID)
+			if err != nil {
+				return atypes.TaskRecord{}, err
+			}
+			if ok {
+				return o.createRemoteProxyTask(ctx, req, remoteSpec, thread)
+			}
 		}
 	}
 	resolvedRuntime, runtimeOptions, err := o.routeRequest(ctx, req)
@@ -307,27 +310,19 @@ func (o *Orchestrator) relayRemoteTask(taskID string, req atypes.TaskCreateReque
 
 // mirrorRemoteEvents imports destination lifecycle frames into the origin event log.
 func (o *Orchestrator) mirrorRemoteEvents(ctx context.Context, client *nodetransport.HTTPClient, taskID string, accepted nodeproto.TaskAcceptedResponse, remoteSpec atypes.RuntimeSpec, remote *atypes.RemoteHandle) {
-	frames, err := client.StreamTaskEvents(ctx, accepted.DestinationTaskID, taskID)
-	if err != nil {
-		taskErr := &atypes.TaskError{Reason: "remote event stream failed", Detail: err.Error()}
-		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceTransport, taskErr.Reason, map[string]any{"remote_peer_id": remoteSpec.PeerID, "detail": taskErr.Detail}, remote, taskErr, "")
-		return
-	}
-	for _, frame := range frames {
-		seq, err := o.store.NextSeq(ctx, taskID)
-		if err != nil {
-			return
-		}
-		event := frame.ToLocalTaskEvent(atypes.NewID(), seq)
-		if err := o.store.AppendEventAndUpdateTask(ctx, event, remote, nil, ""); err != nil {
-			return
-		}
-		if err := o.store.UpdateThreadTurnStatusByTaskID(ctx, taskID, string(event.State), remote); err != nil {
-			return
+	if err := client.StreamTaskEventsFunc(ctx, accepted.DestinationTaskID, taskID, func(frame nodeproto.TaskEventFrame) error {
+		event := frame.ToLocalTaskEvent(atypes.NewID(), 0)
+		if _, err := o.appendEvent(ctx, taskID, event.Kind, event.State, event.Source, event.Message, event.Data, remote, nil, ""); err != nil {
+			return err
 		}
 		if event.State.IsTerminal() {
 			_ = o.store.UpdateRemoteTaskBindingStatus(ctx, taskID, string(event.State))
 		}
+		return nil
+	}); err != nil {
+		taskErr := &atypes.TaskError{Reason: "remote event stream failed", Detail: err.Error()}
+		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceTransport, taskErr.Reason, map[string]any{"remote_peer_id": remoteSpec.PeerID, "detail": taskErr.Detail}, remote, taskErr, "")
+		return
 	}
 }
 

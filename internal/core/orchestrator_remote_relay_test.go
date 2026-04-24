@@ -2,6 +2,9 @@ package core_test
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"net/http"
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
@@ -102,6 +105,83 @@ func TestCreateTaskMirrorsRemoteTerminalEventsIntoOriginEventLog(t *testing.T) {
 	}
 }
 
+func TestCreateTaskPrefersLocalTargetWhenPeerTargetIDCollides(t *testing.T) {
+	ctx := context.Background()
+	originStore, originOrchestrator := setupRelayOriginWithLocalMock(t, "node-a", "http://127.0.0.1:1")
+	defer originStore.Close()
+	defer originOrchestrator.StopAllRuntimeProcesses(ctx)
+
+	task, err := originOrchestrator.CreateTask(ctx, atypes.TaskCreateRequest{
+		Sender:         "operator",
+		TargetAgentID:  "remote-coder",
+		Intent:         "code.patch",
+		Payload:        map[string]any{"mode": "success"},
+		RuntimeOptions: map[string]any{"executor": "coder"},
+	})
+	if err != nil {
+		t.Fatalf("create local task with colliding peer target: %v", err)
+	}
+	completed := waitForOriginStatus(t, originOrchestrator, task.TaskID, atypes.TaskStatusCompleted)
+	if completed.Remote == nil || completed.Remote.Binding == "" {
+		t.Fatalf("expected local adapter binding, got %+v", completed.Remote)
+	}
+	if _, err := originStore.GetRemoteTaskBinding(ctx, task.TaskID); err == nil {
+		t.Fatal("expected no remote task binding when local target ID wins")
+	}
+}
+
+func TestCreateTaskMirrorsRemoteEventsBeforeRemoteStreamCloses(t *testing.T) {
+	ctx := context.Background()
+	emit := make(chan struct{})
+	streamDone := make(chan struct{})
+	streamStarted := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/node/tasks":
+			writeRelayJSON(t, w, http.StatusAccepted, map[string]any{"origin_proxy_task_id": "pending", "destination_node_id": "node-b", "destination_task_id": "destination-task"})
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/node/tasks/destination-task/events":
+			close(streamStarted)
+			<-emit
+			w.Header().Set("Content-Type", "text/event-stream")
+			fmt.Fprintf(w, "event: task.event\ndata: {\"origin_proxy_task_id\":%q,\"destination_node_id\":\"node-b\",\"destination_task_id\":\"destination-task\",\"seq\":1,\"kind\":\"task.awaiting_input\",\"state\":\"awaiting_input\",\"source\":\"runtime\",\"message\":\"Need input\",\"occurred_at\":%q}\n\n", r.URL.Query().Get("origin_proxy_task_id"), atypes.NowUTC().Format(time.RFC3339Nano))
+			w.(http.Flusher).Flush()
+			select {
+			case <-streamDone:
+			case <-r.Context().Done():
+			}
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	defer close(streamDone)
+	originStore, originOrchestrator := setupRelayOrigin(t, "node-a", server.URL)
+	defer originStore.Close()
+	defer originOrchestrator.StopAllRuntimeProcesses(ctx)
+
+	task, err := originOrchestrator.CreateTask(ctx, atypes.TaskCreateRequest{Sender: "operator", TargetAgentID: "remote-coder", Intent: "code.patch", Payload: map[string]any{"mode": "await"}})
+	if err != nil {
+		t.Fatalf("create relayed task: %v", err)
+	}
+	<-streamStarted
+	eventsCh, cancel := originOrchestrator.Subscribe(task.TaskID)
+	defer cancel()
+	close(emit)
+
+	select {
+	case event := <-eventsCh:
+		if event.State != atypes.TaskStatusAwaitingInput || event.Source != atypes.EventSourceTransport {
+			t.Fatalf("expected live mirrored awaiting_input event, got %+v", event)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for live mirrored event before stream close")
+	}
+	awaiting := waitForOriginStatus(t, originOrchestrator, task.TaskID, atypes.TaskStatusAwaitingInput)
+	if awaiting.Status != atypes.TaskStatusAwaitingInput {
+		t.Fatalf("expected origin status awaiting_input, got %+v", awaiting)
+	}
+}
+
 func setupRelayDestination(t *testing.T, nodeID string) (*httptest.Server, *core.Orchestrator, *storage.SQLiteStore) {
 	t.Helper()
 	tmp := t.TempDir()
@@ -144,6 +224,43 @@ func setupRelayOrigin(t *testing.T, nodeID string, peerBaseURL string) (*storage
 		t.Fatalf("create origin orchestrator: %v", err)
 	}
 	return store, orchestrator
+}
+
+func setupRelayOriginWithLocalMock(t *testing.T, nodeID string, peerBaseURL string) (*storage.SQLiteStore, *core.Orchestrator) {
+	t.Helper()
+	tmp := t.TempDir()
+	root := filepath.Clean(filepath.Join("..", ".."))
+	store, err := storage.Open(filepath.Join(tmp, "origin-local.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1")
+	if err != nil {
+		t.Fatalf("open origin store: %v", err)
+	}
+	now := atypes.NowUTC()
+	if err := store.UpsertPeer(context.Background(), atypes.PeerRecord{PeerID: "peer-b", DisplayName: "node-b", BaseURL: peerBaseURL, Status: atypes.PeerStatusOnline, RegisteredAt: now, UpdatedAt: now, LastSeenAt: now}); err != nil {
+		t.Fatalf("upsert peer: %v", err)
+	}
+	if err := store.UpsertPeerTarget(context.Background(), atypes.PeerTargetRecord{PeerID: "peer-b", TargetID: "remote-coder", DisplayName: "remote coder", Capabilities: []string{"code.patch"}, Defaults: map[string]any{"executor": "coder"}, Status: atypes.PeerTargetStatusAvailable, SyncedAt: now}); err != nil {
+		t.Fatalf("upsert peer target: %v", err)
+	}
+	agentService := agents.NewService(store)
+	registerRelayAgent(t, agentService, root)
+	runtimeManager := runtime.NewManager(store)
+	adapterRegistry := adapters.NewRegistry()
+	mockadapters.RegisterAll(adapterRegistry, agentService, runtimeManager)
+	orchestrator, err := core.NewOrchestratorWithNodeID(agentService, store, runtimeManager, adapterRegistry, nodeID)
+	if err != nil {
+		store.Close()
+		t.Fatalf("create origin orchestrator: %v", err)
+	}
+	return store, orchestrator
+}
+
+func writeRelayJSON(t *testing.T, w http.ResponseWriter, status int, body any) {
+	t.Helper()
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(body); err != nil {
+		t.Fatalf("write relay json: %v", err)
+	}
 }
 
 func registerRelayAgent(t *testing.T, service *agents.Service, root string) {
