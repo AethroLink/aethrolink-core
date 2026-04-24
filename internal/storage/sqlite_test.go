@@ -478,6 +478,52 @@ func TestSQLiteStoreMigrateAddsThreadColumnBeforeCreatingTaskThreadIndex(t *test
 	}
 }
 
+func TestSQLiteStoreMarksRemoteRelayBindingsInterruptedOnRestart(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	bindings := []atypes.RemoteTaskBinding{
+		{LocalTaskID: "task-pending", RemotePeerID: "peer-b", DestinationNodeID: "node-b", DestinationTaskID: "remote-pending", Status: atypes.RemoteRelayStatusPending, CreatedAt: now, UpdatedAt: now},
+		{LocalTaskID: "task-streaming", RemotePeerID: "peer-b", DestinationNodeID: "node-b", DestinationTaskID: "remote-streaming", Status: atypes.RemoteRelayStatusStreaming, CreatedAt: now, UpdatedAt: now},
+		{LocalTaskID: "task-completed", RemotePeerID: "peer-b", DestinationNodeID: "node-b", DestinationTaskID: "remote-completed", Status: string(atypes.TaskStatusCompleted), CreatedAt: now, UpdatedAt: now},
+	}
+	for _, binding := range bindings {
+		if err := store.UpsertRemoteTaskBinding(ctx, binding); err != nil {
+			t.Fatalf("upsert binding %s: %v", binding.LocalTaskID, err)
+		}
+	}
+
+	interrupted, err := store.MarkInterruptedRemoteRelayBindingsOnRestart(ctx)
+	if err != nil {
+		t.Fatalf("mark relay bindings interrupted: %v", err)
+	}
+	if len(interrupted) != 2 {
+		t.Fatalf("expected 2 interrupted bindings, got %d", len(interrupted))
+	}
+	for _, taskID := range []string{"task-pending", "task-streaming"} {
+		loaded, err := store.GetRemoteTaskBinding(ctx, taskID)
+		if err != nil {
+			t.Fatalf("get binding %s: %v", taskID, err)
+		}
+		if loaded.Status != atypes.RemoteRelayStatusInterrupted {
+			t.Fatalf("expected %s to be relay_interrupted, got %q", taskID, loaded.Status)
+		}
+	}
+	completed, err := store.GetRemoteTaskBinding(ctx, "task-completed")
+	if err != nil {
+		t.Fatalf("get completed binding: %v", err)
+	}
+	if completed.Status != string(atypes.TaskStatusCompleted) {
+		t.Fatalf("expected terminal binding to stay completed, got %q", completed.Status)
+	}
+}
+
 func TestSQLiteStoreMarksInterruptedThreadsOnRestart(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1:7777")

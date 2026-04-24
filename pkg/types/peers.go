@@ -43,6 +43,15 @@ type PeerTargetRecord struct {
 	SyncedAt     time.Time        `json:"synced_at"`
 }
 
+const (
+	// RemoteRelayStatusPending means the origin accepted relay work but has not confirmed stream handoff.
+	RemoteRelayStatusPending = "relay_pending"
+	// RemoteRelayStatusStreaming means the origin is actively mirroring the destination event stream.
+	RemoteRelayStatusStreaming = "relay_streaming"
+	// RemoteRelayStatusInterrupted means restart or stream loss made relay completion unknown.
+	RemoteRelayStatusInterrupted = "relay_interrupted"
+)
+
 // RemoteTaskBinding records how an origin proxy task maps to destination execution.
 type RemoteTaskBinding struct {
 	LocalTaskID         string    `json:"local_task_id"`

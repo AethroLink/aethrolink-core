@@ -164,6 +164,45 @@ func (s *SQLiteStore) UpdateRemoteTaskBindingStatus(ctx context.Context, localTa
 	return nil
 }
 
+// MarkInterruptedRemoteRelayBindingsOnRestart makes unknown in-flight relays restart-visible.
+func (s *SQLiteStore) MarkInterruptedRemoteRelayBindingsOnRestart(ctx context.Context) ([]atypes.RemoteTaskBinding, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT local_task_id, remote_peer_id, destination_node_id, destination_task_id, COALESCE(destination_thread_id, ''), status, created_at, updated_at
+		FROM remote_task_bindings
+		WHERE status NOT IN (?, ?, ?, ?)
+	`, string(atypes.TaskStatusCompleted), string(atypes.TaskStatusFailed), string(atypes.TaskStatusCancelled), atypes.RemoteRelayStatusInterrupted)
+	if err != nil {
+		return nil, fmt.Errorf("list interrupted remote task bindings: %w", err)
+	}
+	defer rows.Close()
+
+	var interrupted []atypes.RemoteTaskBinding
+	for rows.Next() {
+		binding, err := scanRemoteTaskBinding(rows)
+		if err != nil {
+			return nil, err
+		}
+		interrupted = append(interrupted, binding)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("scan interrupted remote task bindings: %w", err)
+	}
+	if len(interrupted) == 0 {
+		return nil, nil
+	}
+
+	now := atypes.NowUTC().Format(time.RFC3339Nano)
+	_, err = s.db.ExecContext(ctx, `
+		UPDATE remote_task_bindings
+		SET status = ?, updated_at = ?
+		WHERE status NOT IN (?, ?, ?, ?)
+	`, atypes.RemoteRelayStatusInterrupted, now, string(atypes.TaskStatusCompleted), string(atypes.TaskStatusFailed), string(atypes.TaskStatusCancelled), atypes.RemoteRelayStatusInterrupted)
+	if err != nil {
+		return nil, fmt.Errorf("mark interrupted remote task bindings on restart: %w", err)
+	}
+	return interrupted, nil
+}
+
 // scanPeer hydrates peer rows while preserving JSON extension fields.
 func scanPeer(scanner interface{ Scan(dest ...any) error }) (atypes.PeerRecord, error) {
 	var peer atypes.PeerRecord
