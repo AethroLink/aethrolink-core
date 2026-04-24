@@ -16,8 +16,22 @@ const (
 	MessageTypeTaskEvent    MessageType = "task.event"
 	MessageTypeTaskResume   MessageType = "task.resume"
 	MessageTypeTaskCancel   MessageType = "task.cancel"
+	MessageTypeHealth       MessageType = "node.health"
 	MessageTypeError        MessageType = "error"
 )
+
+// NodeHealthResponse is the minimal peer liveness contract exposed by node transport.
+type NodeHealthResponse struct {
+	NodeID    string    `json:"node_id"`
+	OK        bool      `json:"ok"`
+	Protocol  string    `json:"protocol"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+// MessageType returns the health discriminator for peer capability checks.
+func (r NodeHealthResponse) MessageType() MessageType {
+	return MessageTypeHealth
+}
 
 // TaskSubmitRequest is the typed remote execution request sent by an origin node.
 type TaskSubmitRequest struct {
