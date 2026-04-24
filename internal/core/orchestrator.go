@@ -70,9 +70,21 @@ func (o *Orchestrator) reconcileRestartState(ctx context.Context) error {
 		return fmt.Errorf("mark interrupted remote relays on restart: %w", err)
 	}
 	for _, binding := range bindings {
+		task, err := o.store.GetTask(ctx, binding.LocalTaskID)
+		if err != nil {
+			return fmt.Errorf("load remote relay proxy task %s: %w", binding.LocalTaskID, err)
+		}
+		if task.Status.IsTerminal() {
+			// Terminal proxy tasks already reflect the operator-visible outcome; repair
+			// the stale relay binding instead of downgrading the task after restart.
+			if err := o.store.UpdateRemoteTaskBindingStatus(ctx, binding.LocalTaskID, string(task.Status)); err != nil {
+				return fmt.Errorf("repair terminal remote relay %s: %w", binding.LocalTaskID, err)
+			}
+			continue
+		}
 		remote := &atypes.RemoteHandle{TaskID: binding.LocalTaskID, Binding: binding.DestinationTaskID}
 		taskErr := &atypes.TaskError{Reason: "remote relay interrupted", Detail: "origin node restarted before observing destination terminal state"}
-		_, err := o.appendEvent(ctx, binding.LocalTaskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceTransport, "Remote relay interrupted by origin restart", map[string]any{"remote_peer_id": binding.RemotePeerID, "destination_node_id": binding.DestinationNodeID, "destination_task_id": binding.DestinationTaskID, "relay_status": atypes.RemoteRelayStatusInterrupted}, remote, taskErr, "")
+		_, err = o.appendEvent(ctx, binding.LocalTaskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceTransport, "Remote relay interrupted by origin restart", map[string]any{"remote_peer_id": binding.RemotePeerID, "destination_node_id": binding.DestinationNodeID, "destination_task_id": binding.DestinationTaskID, "relay_status": atypes.RemoteRelayStatusInterrupted}, remote, taskErr, "")
 		if err != nil {
 			return fmt.Errorf("record interrupted remote relay %s: %w", binding.LocalTaskID, err)
 		}

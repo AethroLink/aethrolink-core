@@ -143,9 +143,14 @@ func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusInternalServerError, nodeproto.MessageTypeTaskEvent, "streaming_unsupported", errors.New("streaming unsupported"), false)
 		return
 	}
+	// Flush headers before replay so peers can issue resume/cancel while history streams.
+	flusher.Flush()
 	var lastReplaySeq int64
 	terminalReplayed := false
 	for _, event := range history {
+		if event.Seq <= lastReplaySeq {
+			continue
+		}
 		if event.Seq > lastReplaySeq {
 			lastReplaySeq = event.Seq
 		}
@@ -154,6 +159,23 @@ func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
 		}
 		writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, event))
 		flusher.Flush()
+		select {
+		case liveEvent, ok := <-eventsCh:
+			if !ok {
+				return
+			}
+			if liveEvent.Seq <= lastReplaySeq {
+				continue
+			}
+			// Live terminal events must not wait behind a large replay backlog.
+			lastReplaySeq = liveEvent.Seq
+			writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, liveEvent))
+			flusher.Flush()
+			if liveEvent.State.IsTerminal() {
+				return
+			}
+		default:
+		}
 	}
 	if terminalReplayed {
 		return
