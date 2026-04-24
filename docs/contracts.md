@@ -348,7 +348,7 @@ Invocation remains on the existing task endpoints:
 
 ### 3.9 NetworkEnvelope
 
-This type is internal in v0.1 but must exist now for future transport support.
+This type is internal in v0.1 but must exist now for future transport support. Multinode task relay should prefer the typed node protocol payloads below instead of interpreting arbitrary `body` maps in core routing.
 
 ```json
 {
@@ -365,6 +365,102 @@ This type is internal in v0.1 but must exist now for future transport support.
   "signature": null
 }
 ```
+
+### 3.10 Node Protocol Payloads
+
+`internal/nodeproto` defines the first static-peer HTTP multinode contract. These payloads keep remote transport separate from runtime adapters and make origin-vs-destination ownership explicit.
+
+#### Message types
+
+```text
+task.submit
+task.accepted
+task.event
+task.resume
+task.cancel
+error
+```
+
+#### task.submit
+
+```json
+{
+  "origin_node_id": "node-a",
+  "origin_proxy_task_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1V",
+  "origin_thread_id": "thread-origin-1",
+  "target_agent_id": "researcher",
+  "intent": "research.summary",
+  "payload": { "topic": "multinode" },
+  "runtime_options": { "executor": "research" },
+  "trace": { "trace_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1X" },
+  "delivery": { "mode": "stream", "launch_if_down": true, "timeout_ms": 60000 },
+  "submitted_at": "2026-04-24T07:00:00Z"
+}
+```
+
+Rules:
+
+- origin node owns `origin_proxy_task_id`
+- destination node owns the real execution task it creates after acceptance
+- `target_agent_id` is resolved on the destination node
+- `intent` and `payload` are required
+
+#### task.accepted
+
+```json
+{
+  "origin_proxy_task_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1V",
+  "destination_node_id": "node-b",
+  "destination_task_id": "remote-task-9",
+  "destination_thread_id": "thread-remote-2",
+  "accepted_at": "2026-04-24T07:00:01Z"
+}
+```
+
+Rules:
+
+- origin persists this as the remote task binding
+- destination task/thread ids are opaque to the origin
+
+#### task.event
+
+```json
+{
+  "origin_proxy_task_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1V",
+  "destination_node_id": "node-b",
+  "destination_task_id": "remote-task-9",
+  "destination_thread_id": "thread-remote-2",
+  "seq": 3,
+  "kind": "task.completed",
+  "state": "completed",
+  "source": "runtime",
+  "message": "remote task completed",
+  "data": {},
+  "remote_execution_id": "run-9",
+  "remote_session_id": "session-4",
+  "occurred_at": "2026-04-24T07:01:00Z"
+}
+```
+
+Rules:
+
+- origin stores remote events against `origin_proxy_task_id`
+- persisted local event source should be `transport`
+- persisted local event `seq` is origin-assigned; remote `seq` is stored as `remote_event_seq`
+- destination ownership metadata must remain inspectable in local event data
+- peer-supplied `data` must not override reserved ownership keys such as `destination_node_id`, `destination_task_id`, `remote_execution_id`, or `remote_event_seq`
+
+#### task.resume and task.cancel
+
+Both control messages must include:
+
+- `origin_node_id`
+- `origin_proxy_task_id`
+- `destination_task_id`
+- `trace`
+- `requested_at`
+
+`task.resume` additionally includes `payload`; `task.cancel` additionally includes optional `reason`.
 
 ## 4. HTTP API Contracts
 
