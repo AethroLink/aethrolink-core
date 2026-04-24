@@ -10,21 +10,36 @@ import (
 
 	"github.com/aethrolink/aethrolink-core/internal/agents"
 	"github.com/aethrolink/aethrolink-core/internal/core"
+	"github.com/aethrolink/aethrolink-core/internal/nodeproto"
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
 
 type Server struct {
 	orchestrator *core.Orchestrator
 	agents       *agents.Service
+	nodeID       string
 }
 
 // NewServer wires the thin HTTP control plane onto the orchestrator. The HTTP
 // layer should stay translation-only: validate/decode requests, delegate to the
 // core, then shape the response.
 func NewServer(orchestrator *core.Orchestrator, agentService *agents.Service) http.Handler {
-	s := &Server{orchestrator: orchestrator, agents: agentService}
+	return NewServerWithNodeID(orchestrator, agentService, "local-node")
+}
+
+// NewServerWithNodeID exposes node-transport endpoints with an explicit node identity.
+func NewServerWithNodeID(orchestrator *core.Orchestrator, agentService *agents.Service, nodeID string) http.Handler {
+	if nodeID == "" {
+		nodeID = "local-node"
+	}
+	s := &Server{orchestrator: orchestrator, agents: agentService, nodeID: nodeID}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /ping", s.handlePing)
+	mux.HandleFunc("GET /v1/node/health", s.handleNodeHealth)
+	mux.HandleFunc("POST /v1/node/tasks", s.handleNodeTaskSubmit)
+	mux.HandleFunc("GET /v1/node/tasks/{task_id}/events", s.handleNodeTaskEvents)
+	mux.HandleFunc("POST /v1/node/tasks/{task_id}/resume", s.handleNodeTaskResume)
+	mux.HandleFunc("POST /v1/node/tasks/{task_id}/cancel", s.handleNodeTaskCancel)
 	mux.HandleFunc("GET /artifacts/{artifact_id}", s.handleGetArtifact)
 	mux.HandleFunc("POST /v1/agents/register", s.handleRegisterAgent)
 	mux.HandleFunc("GET /v1/agents", s.handleListAgents)
@@ -50,6 +65,199 @@ func NewServer(orchestrator *core.Orchestrator, agentService *agents.Service) ht
 
 func (s *Server) handlePing(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "service": "aethrolink-go"})
+}
+
+// handleNodeHealth is the static-peer liveness probe for Phase 3 HTTP transport.
+func (s *Server) handleNodeHealth(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, nodeproto.NodeHealthResponse{
+		NodeID:    s.nodeID,
+		OK:        true,
+		Protocol:  "aethrolink.node.v1",
+		CheckedAt: atypes.NowUTC(),
+	})
+}
+
+// handleNodeTaskSubmit accepts a peer relay request and executes it through local routing.
+func (s *Server) handleNodeTaskSubmit(w http.ResponseWriter, r *http.Request) {
+	var req nodeproto.TaskSubmitRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskSubmit, "invalid_json", err, false)
+		return
+	}
+	if err := req.Validate(); err != nil {
+		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskSubmit, "invalid_task_submit", err, false)
+		return
+	}
+	task, err := s.orchestrator.CreateTask(r.Context(), atypes.TaskCreateRequest{
+		Sender:         req.OriginNodeID,
+		TargetAgentID:  req.TargetAgentID,
+		Intent:         req.Intent,
+		Payload:        req.Payload,
+		RuntimeOptions: req.RuntimeOptions,
+		Delivery:       req.Delivery,
+		Metadata: map[string]any{
+			"origin_node_id":       req.OriginNodeID,
+			"origin_proxy_task_id": req.OriginProxyTaskID,
+			"origin_thread_id":     req.OriginThreadID,
+			"trace_id":             req.Trace.TraceID,
+		},
+	})
+	if err != nil {
+		writeNodeError(w, errorStatus(err), nodeproto.MessageTypeTaskSubmit, "task_submit_failed", err, true)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, nodeproto.TaskAcceptedResponse{
+		OriginProxyTaskID: req.OriginProxyTaskID,
+		DestinationNodeID: s.nodeID,
+		DestinationTaskID: task.TaskID,
+		AcceptedAt:        atypes.NowUTC(),
+	})
+}
+
+// handleNodeTaskEvents streams destination task events as typed peer frames.
+func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("task_id")
+	originProxyTaskID := r.URL.Query().Get("origin_proxy_task_id")
+	if originProxyTaskID == "" {
+		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskEvent, "invalid_task_events", errors.New("origin_proxy_task_id is required"), false)
+		return
+	}
+	// Subscribe before replay so events committed during history reads cannot be lost.
+	eventsCh, cancel := s.orchestrator.Subscribe(taskID)
+	defer cancel()
+	task, err := s.orchestrator.GetTask(r.Context(), taskID)
+	if err != nil {
+		writeNodeError(w, errorStatus(err), nodeproto.MessageTypeTaskEvent, "task_events_failed", err, true)
+		return
+	}
+	history, err := s.orchestrator.ListEvents(r.Context(), taskID)
+	if err != nil {
+		writeNodeError(w, errorStatus(err), nodeproto.MessageTypeTaskEvent, "task_events_failed", err, true)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeNodeError(w, http.StatusInternalServerError, nodeproto.MessageTypeTaskEvent, "streaming_unsupported", errors.New("streaming unsupported"), false)
+		return
+	}
+	var lastReplaySeq int64
+	terminalReplayed := false
+	for _, event := range history {
+		if event.Seq > lastReplaySeq {
+			lastReplaySeq = event.Seq
+		}
+		if event.State.IsTerminal() {
+			terminalReplayed = true
+		}
+		writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, event))
+		flusher.Flush()
+	}
+	if terminalReplayed {
+		return
+	}
+	ctx := r.Context()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case event, ok := <-eventsCh:
+			if !ok {
+				return
+			}
+			if event.Seq <= lastReplaySeq {
+				continue
+			}
+			writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, event))
+			flusher.Flush()
+			if event.State.IsTerminal() {
+				return
+			}
+		case <-time.After(15 * time.Second):
+			fmt.Fprint(w, ": keep-alive\n\n")
+			flusher.Flush()
+		}
+	}
+}
+
+// handleNodeTaskResume applies a peer resume request to the local destination task.
+func (s *Server) handleNodeTaskResume(w http.ResponseWriter, r *http.Request) {
+	var req nodeproto.TaskResumeRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskResume, "invalid_json", err, false)
+		return
+	}
+	if err := req.Validate(); err != nil {
+		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskResume, "invalid_task_resume", err, false)
+		return
+	}
+	if req.DestinationTaskID != r.PathValue("task_id") {
+		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskResume, "task_id_mismatch", errors.New("destination_task_id does not match path"), false)
+		return
+	}
+	task, err := s.orchestrator.ResumeTask(r.Context(), req.DestinationTaskID, req.Payload)
+	if err != nil {
+		writeNodeError(w, errorStatus(err), nodeproto.MessageTypeTaskResume, "task_resume_failed", err, true)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"task_id": task.TaskID, "status": task.Status})
+}
+
+// handleNodeTaskCancel applies a peer cancel request to the local destination task.
+func (s *Server) handleNodeTaskCancel(w http.ResponseWriter, r *http.Request) {
+	var req nodeproto.TaskCancelRequest
+	if err := decodeJSON(r, &req); err != nil {
+		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskCancel, "invalid_json", err, false)
+		return
+	}
+	if err := req.Validate(); err != nil {
+		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskCancel, "invalid_task_cancel", err, false)
+		return
+	}
+	if req.DestinationTaskID != r.PathValue("task_id") {
+		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskCancel, "task_id_mismatch", errors.New("destination_task_id does not match path"), false)
+		return
+	}
+	task, err := s.orchestrator.CancelTask(r.Context(), req.DestinationTaskID, req.Reason)
+	if err != nil {
+		writeNodeError(w, errorStatus(err), nodeproto.MessageTypeTaskCancel, "task_cancel_failed", err, true)
+		return
+	}
+	status := http.StatusAccepted
+	if task.Status.IsTerminal() {
+		status = http.StatusOK
+	}
+	writeJSON(w, status, map[string]any{"task_id": task.TaskID, "status": task.Status})
+}
+
+// writeNodeSSE serializes peer event frames onto the node transport stream.
+func writeNodeSSE(w http.ResponseWriter, frame nodeproto.TaskEventFrame) {
+	payload, _ := json.Marshal(frame)
+	fmt.Fprintf(w, "event: task.event\nid: %d\ndata: %s\n\n", frame.Seq, payload)
+}
+
+// nodeTaskEventFrame projects local destination events onto the peer protocol shape.
+func nodeTaskEventFrame(nodeID string, originProxyTaskID string, task atypes.TaskRecord, event atypes.TaskEvent) nodeproto.TaskEventFrame {
+	frame := nodeproto.TaskEventFrame{
+		OriginProxyTaskID:   originProxyTaskID,
+		DestinationNodeID:   nodeID,
+		DestinationTaskID:   event.TaskID,
+		DestinationThreadID: task.ThreadID,
+		Seq:                 event.Seq,
+		Kind:                event.Kind,
+		State:               event.State,
+		Source:              event.Source,
+		Message:             event.Message,
+		Data:                event.Data,
+		OccurredAt:          event.CreatedAt,
+	}
+	if task.Remote != nil {
+		frame.RemoteExecutionID = task.Remote.RemoteExecutionID
+		frame.RemoteSessionID = task.Remote.RemoteSessionID
+	}
+	return frame
 }
 
 func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request) {
@@ -332,4 +540,14 @@ func writeJSON(w http.ResponseWriter, status int, payload any) {
 
 func writeError(w http.ResponseWriter, status int, err error) {
 	writeJSON(w, status, map[string]any{"error": core.ErrorMessage(err)})
+}
+
+// writeNodeError keeps peer-facing failures on the typed node protocol surface.
+func writeNodeError(w http.ResponseWriter, status int, messageType nodeproto.MessageType, code string, err error, retryable bool) {
+	writeJSON(w, status, nodeproto.ErrorResponse{
+		MessageTypeHint: messageType,
+		Code:            code,
+		Message:         core.ErrorMessage(err),
+		Retryable:       retryable,
+	})
 }

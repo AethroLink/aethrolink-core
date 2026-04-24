@@ -16,21 +16,35 @@ const (
 	MessageTypeTaskEvent    MessageType = "task.event"
 	MessageTypeTaskResume   MessageType = "task.resume"
 	MessageTypeTaskCancel   MessageType = "task.cancel"
+	MessageTypeHealth       MessageType = "node.health"
 	MessageTypeError        MessageType = "error"
 )
 
+// NodeHealthResponse is the minimal peer liveness contract exposed by node transport.
+type NodeHealthResponse struct {
+	NodeID    string    `json:"node_id"`
+	OK        bool      `json:"ok"`
+	Protocol  string    `json:"protocol"`
+	CheckedAt time.Time `json:"checked_at"`
+}
+
+// MessageType returns the health discriminator for peer capability checks.
+func (r NodeHealthResponse) MessageType() MessageType {
+	return MessageTypeHealth
+}
+
 // TaskSubmitRequest is the typed remote execution request sent by an origin node.
 type TaskSubmitRequest struct {
-	OriginNodeID      string               `json:"origin_node_id"`
-	OriginProxyTaskID string               `json:"origin_proxy_task_id"`
-	OriginThreadID    string               `json:"origin_thread_id,omitempty"`
-	TargetAgentID     string               `json:"target_agent_id"`
-	Intent            string               `json:"intent"`
-	Payload           map[string]any       `json:"payload"`
-	RuntimeOptions    map[string]any       `json:"runtime_options,omitempty"`
-	Trace             types.TraceContext   `json:"trace"`
-	Delivery          types.DeliveryPolicy `json:"delivery"`
-	SubmittedAt       time.Time            `json:"submitted_at"`
+	OriginNodeID      string                `json:"origin_node_id"`
+	OriginProxyTaskID string                `json:"origin_proxy_task_id"`
+	OriginThreadID    string                `json:"origin_thread_id,omitempty"`
+	TargetAgentID     string                `json:"target_agent_id"`
+	Intent            string                `json:"intent"`
+	Payload           map[string]any        `json:"payload"`
+	RuntimeOptions    map[string]any        `json:"runtime_options,omitempty"`
+	Trace             types.TraceContext    `json:"trace"`
+	Delivery          *types.DeliveryPolicy `json:"delivery,omitempty"`
+	SubmittedAt       time.Time             `json:"submitted_at"`
 }
 
 // MessageType returns the wire discriminator without requiring generic envelopes.

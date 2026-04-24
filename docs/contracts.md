@@ -427,6 +427,7 @@ task.accepted
 task.event
 task.resume
 task.cancel
+node.health
 error
 ```
 
@@ -453,6 +454,7 @@ Rules:
 - destination node owns the real execution task it creates after acceptance
 - `target_agent_id` is resolved on the destination node
 - `intent` and `payload` are required
+- `delivery` is optional; if omitted, the destination applies the same default delivery policy as local task creation
 
 #### task.accepted
 
@@ -775,6 +777,139 @@ Status: `202 Accepted`
   "stopped": true
 }
 ```
+
+## 4.10 GET /v1/node/health
+
+Return the destination node identity and basic static-peer transport readiness.
+
+### Response
+
+Status: `200 OK`
+
+```json
+{
+  "node_id": "node-b",
+  "ok": true,
+  "protocol": "aethrolink.node.v1",
+  "checked_at": "2026-04-24T07:00:00Z"
+}
+```
+
+Rules:
+
+- `node_id` is the destination node identity used in node protocol responses
+- `ok` only means this HTTP node transport is reachable; it is not a runtime health guarantee
+- `protocol` is the static-peer HTTP node protocol version string for compatibility checks
+
+## 4.11 POST /v1/node/tasks
+
+Accept a peer `task.submit` payload and create a destination-owned local task through the normal orchestrator/runtime adapter path.
+
+### Request
+
+Body must follow the `task.submit` contract in section 3.11.
+
+### Response
+
+Status: `202 Accepted`
+
+```json
+{
+  "origin_proxy_task_id": "01JY0R4R2V2QKBR8Q2YQ9BMS1V",
+  "destination_node_id": "node-b",
+  "destination_task_id": "01JY0R4R2V2QKBR8Q2YQ9BMS2A",
+  "destination_thread_id": "",
+  "accepted_at": "2026-04-24T07:00:01Z"
+}
+```
+
+Rules:
+
+- the destination node resolves `target_agent_id` locally and executes through local adapters only
+- the origin node must treat `destination_task_id` as opaque and persist it in a remote binding
+- the destination task records origin metadata (`origin_node_id`, `origin_proxy_task_id`, `origin_thread_id`, and `trace_id`) for auditability
+- Phase 3 transport accepts and executes the remote task, exposes destination events, and forwards resume/cancel controls; durable origin proxy binding remains a later phase
+
+### Errors
+
+Node transport errors use the typed `error` contract, not the public task API error shape.
+
+```json
+{
+  "message_type_hint": "task.submit",
+  "code": "invalid_task_submit",
+  "message": "target_agent_id is required",
+  "retryable": false
+}
+```
+
+- `400` invalid JSON or invalid `task.submit`
+- `404` explicit destination target not found
+- `409` destination routing conflict
+- `422` destination target cannot satisfy requested intent
+- `500` unexpected destination execution setup failure
+
+## 4.12 GET /v1/node/tasks/{task_id}/events
+
+Stream destination-owned task events as node protocol `task.event` frames.
+
+### Query
+
+- `origin_proxy_task_id` is required so the origin can attach returned frames to its local proxy task.
+
+### SSE format
+
+```text
+event: task.event
+id: 4
+data: {"origin_proxy_task_id":"01JY0R4R2V2QKBR8Q2YQ9BMS1V","destination_node_id":"node-b","destination_task_id":"remote-task-9","seq":4,"kind":"task.completed","state":"completed","source":"runtime","occurred_at":"2026-04-24T07:01:00Z"}
+```
+
+Rules:
+
+- destination events are replayed from persisted history before live events
+- the destination subscribes before replaying history so terminal events committed during replay are not missed
+- `id` equals the destination event `seq`
+- the stream closes after a terminal event
+- frames include destination ownership fields and preserve event source/message/data
+
+Errors use typed `error` payloads with `message_type_hint: "task.event"`.
+
+## 4.13 POST /v1/node/tasks/{task_id}/resume
+
+Apply a peer `task.resume` control message to a destination-owned task.
+
+### Request
+
+Body must follow the `task.resume` contract in section 3.11. `destination_task_id` must match the path task id.
+
+### Response
+
+Status: `202 Accepted`
+
+```json
+{ "task_id": "remote-task-9", "status": "awaiting_input" }
+```
+
+Errors use typed `error` payloads with `message_type_hint: "task.resume"`.
+
+## 4.14 POST /v1/node/tasks/{task_id}/cancel
+
+Apply a peer `task.cancel` control message to a destination-owned task.
+
+### Request
+
+Body must follow the `task.cancel` contract in section 3.11. `destination_task_id` must match the path task id.
+
+### Response
+
+Status is `202 Accepted` while cancellation is in progress or `200 OK` if the task is already terminal after the call.
+
+```json
+{ "task_id": "remote-task-9", "status": "cancelled" }
+```
+
+Errors use typed `error` payloads with `message_type_hint: "task.cancel"`.
 
 ## 5. Persistence Contracts
 
