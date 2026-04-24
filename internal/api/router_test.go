@@ -93,12 +93,14 @@ func registerTestAgent(t *testing.T, svc *agents.Service, req atypes.AgentRegist
 func waitForStatus(t *testing.T, baseURL, taskID, expected string) map[string]any {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
+	var last map[string]any
 	for time.Now().Before(deadline) {
 		resp, err := http.Get(baseURL + "/v1/tasks/" + taskID)
 		if err == nil {
 			var task map[string]any
 			if json.NewDecoder(resp.Body).Decode(&task) == nil {
 				_ = resp.Body.Close()
+				last = task
 				if status, _ := task["status"].(string); status == expected {
 					return task
 				}
@@ -108,7 +110,7 @@ func waitForStatus(t *testing.T, baseURL, taskID, expected string) map[string]an
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for %s", expected)
+	t.Fatalf("timed out waiting for %s; last task=%+v", expected, last)
 	return nil
 }
 

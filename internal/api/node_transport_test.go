@@ -65,6 +65,98 @@ func setupNodeTransportServerWithStore(t *testing.T, nodeID string) (*httptest.S
 	return server, orchestrator, store
 }
 
+func setupNodeTransportServerWithoutAgents(t *testing.T, nodeID string) (*httptest.Server, *core.Orchestrator, *storage.SQLiteStore) {
+	t.Helper()
+	tmp := t.TempDir()
+	store, err := storage.Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	runtimeManager := runtime.NewManager(store)
+	agentService := agents.NewService(store)
+	adapterRegistry := adapters.NewRegistry()
+	mockadapters.RegisterAll(adapterRegistry, agentService, runtimeManager)
+	orchestrator, err := core.NewOrchestratorWithNodeID(agentService, store, runtimeManager, adapterRegistry, nodeID)
+	if err != nil {
+		_ = store.Close()
+		t.Fatalf("create orchestrator: %v", err)
+	}
+	server := httptest.NewServer(NewServerWithNodeID(orchestrator, agentService, nodeID))
+	t.Cleanup(func() {
+		_ = orchestrator.StopAllRuntimeProcesses(context.Background())
+		server.Close()
+		_ = store.Close()
+	})
+	return server, orchestrator, store
+}
+
+func TestPeerSyncCachesDestinationTargetsAndEnablesOriginRelay(t *testing.T) {
+	destination, _ := setupNodeTransportServer(t, "node-b")
+	origin, _, originStore := setupNodeTransportServerWithoutAgents(t, "node-a")
+
+	peerBody := bytes.NewBufferString(`{"peer_id":"peer-b","display_name":"Node B","base_url":"` + destination.URL + `"}`)
+	addResp, err := http.Post(origin.URL+"/v1/peers", "application/json", peerBody)
+	if err != nil {
+		t.Fatalf("add peer: %v", err)
+	}
+	defer addResp.Body.Close()
+	if addResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected peer add 201, got %d", addResp.StatusCode)
+	}
+
+	syncResp, err := http.Post(origin.URL+"/v1/peers/peer-b/sync", "application/json", nil)
+	if err != nil {
+		t.Fatalf("sync peer targets: %v", err)
+	}
+	defer syncResp.Body.Close()
+	if syncResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected peer sync 200, got %d", syncResp.StatusCode)
+	}
+
+	targetsResp, err := http.Get(origin.URL + "/v1/targets")
+	if err != nil {
+		t.Fatalf("list origin targets: %v", err)
+	}
+	defer targetsResp.Body.Close()
+	var listed struct {
+		Targets []atypes.RuntimeSpec `json:"targets"`
+	}
+	if err := json.NewDecoder(targetsResp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode origin targets: %v", err)
+	}
+	targets := listed.Targets
+	if len(targets) != 1 || targets[0].TargetID != "mock_hermes" || targets[0].Owner != atypes.TargetOwnerRemote || targets[0].PeerID != "peer-b" {
+		t.Fatalf("origin did not expose synced peer target: %+v", targets)
+	}
+
+	taskBody := bytes.NewBufferString(`{"target_agent_id":"mock_hermes","intent":"code.patch","payload":{"mode":"success"},"runtime_options":{"executor":"coder"}}`)
+	taskResp, err := http.Post(origin.URL+"/v1/tasks", "application/json", taskBody)
+	if err != nil {
+		t.Fatalf("create origin proxy task: %v", err)
+	}
+	defer taskResp.Body.Close()
+	if taskResp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected origin task 202, got %d", taskResp.StatusCode)
+	}
+	var created struct {
+		Task atypes.TaskRecord `json:"task"`
+	}
+	if err := json.NewDecoder(taskResp.Body).Decode(&created); err != nil {
+		t.Fatalf("decode origin task: %v", err)
+	}
+	completed := waitForStatus(t, origin.URL, created.Task.TaskID, string(atypes.TaskStatusCompleted))
+	if completed["resolved_agent_id"] != "mock_hermes" {
+		t.Fatalf("origin proxy task did not resolve remote target: %+v", completed)
+	}
+	binding, err := originStore.GetRemoteTaskBinding(context.Background(), created.Task.TaskID)
+	if err != nil {
+		t.Fatalf("load remote binding: %v", err)
+	}
+	if binding.RemotePeerID != "peer-b" || binding.DestinationNodeID != "node-b" || binding.DestinationTaskID == "" {
+		t.Fatalf("remote relay binding missing destination ownership: %+v", binding)
+	}
+}
+
 func TestNodeHealthEndpointReturnsDestinationIdentity(t *testing.T) {
 	server, _ := setupNodeTransportServer(t, "node-b")
 
