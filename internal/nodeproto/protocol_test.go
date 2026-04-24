@@ -65,15 +65,54 @@ func TestTaskEventFrameMapsRemoteExecutionToOriginProxyTask(t *testing.T) {
 		t.Fatalf("expected task.event message type, got %q", event.MessageType())
 	}
 
-	local := event.ToLocalTaskEvent("event-1")
+	local := event.ToLocalTaskEvent("event-1", 11)
 	if local.TaskID != "task-local-1" {
 		t.Fatalf("expected local proxy task id, got %q", local.TaskID)
+	}
+	if local.Seq != 11 {
+		t.Fatalf("expected caller-assigned local seq, got %d", local.Seq)
 	}
 	if local.Source != types.EventSourceTransport {
 		t.Fatalf("expected remote event to be stored as transport-sourced, got %q", local.Source)
 	}
+	if local.Data["remote_event_seq"] != int64(3) {
+		t.Fatalf("expected remote seq to remain audit metadata, got %+v", local.Data)
+	}
 	if local.Data["destination_task_id"] != "task-remote-9" || local.Data["destination_node_id"] != "node-b" {
 		t.Fatalf("expected destination ownership metadata, got %+v", local.Data)
+	}
+}
+
+func TestTaskEventFrameDoesNotLetRemoteDataOverrideOwnershipMetadata(t *testing.T) {
+	event := TaskEventFrame{
+		OriginProxyTaskID: "task-local-1",
+		DestinationNodeID: "node-b",
+		DestinationTaskID: "task-remote-9",
+		Seq:               3,
+		Kind:              types.TaskEventTaskRunning,
+		State:             types.TaskStatusRunning,
+		RemoteExecutionID: "run-9",
+		RemoteSessionID:   "session-4",
+		OccurredAt:        time.Date(2026, 4, 24, 7, 1, 0, 0, time.UTC),
+		Data: map[string]any{
+			"destination_node_id": "spoofed-node",
+			"destination_task_id": "spoofed-task",
+			"remote_execution_id": "spoofed-run",
+			"remote_session_id":   "spoofed-session",
+			"remote_event_seq":    int64(99),
+			"custom":              "preserved",
+		},
+	}
+
+	local := event.ToLocalTaskEvent("event-1", 11)
+	if local.Data["destination_node_id"] != "node-b" || local.Data["destination_task_id"] != "task-remote-9" {
+		t.Fatalf("ownership metadata was overwritten: %+v", local.Data)
+	}
+	if local.Data["remote_execution_id"] != "run-9" || local.Data["remote_session_id"] != "session-4" {
+		t.Fatalf("remote handle metadata was overwritten: %+v", local.Data)
+	}
+	if local.Data["remote_event_seq"] != int64(3) || local.Data["custom"] != "preserved" {
+		t.Fatalf("expected remote seq protected and custom data preserved: %+v", local.Data)
 	}
 }
 

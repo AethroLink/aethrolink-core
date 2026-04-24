@@ -446,7 +446,9 @@ Rules:
 
 - origin stores remote events against `origin_proxy_task_id`
 - persisted local event source should be `transport`
+- persisted local event `seq` is origin-assigned; remote `seq` is stored as `remote_event_seq`
 - destination ownership metadata must remain inspectable in local event data
+- peer-supplied `data` must not override reserved ownership keys such as `destination_node_id`, `destination_task_id`, `remote_execution_id`, or `remote_event_seq`
 
 #### task.resume and task.cancel
 

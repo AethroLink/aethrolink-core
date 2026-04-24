@@ -129,11 +129,18 @@ func (f TaskEventFrame) Validate() error {
 }
 
 // ToLocalTaskEvent stores remote ownership metadata in the origin task event log.
-func (f TaskEventFrame) ToLocalTaskEvent(eventID string) types.TaskEvent {
-	data := map[string]any{
-		"destination_node_id": f.DestinationNodeID,
-		"destination_task_id": f.DestinationTaskID,
+func (f TaskEventFrame) ToLocalTaskEvent(eventID string, localSeq int64) types.TaskEvent {
+	data := map[string]any{}
+	for key, value := range f.Data {
+		if isReservedEventDataKey(key) {
+			continue
+		}
+		data[key] = value
 	}
+	// Canonical ownership fields are written after remote data so peers cannot spoof them.
+	data["destination_node_id"] = f.DestinationNodeID
+	data["destination_task_id"] = f.DestinationTaskID
+	data["remote_event_seq"] = f.Seq
 	if f.DestinationThreadID != "" {
 		data["destination_thread_id"] = f.DestinationThreadID
 	}
@@ -143,19 +150,26 @@ func (f TaskEventFrame) ToLocalTaskEvent(eventID string) types.TaskEvent {
 	if f.RemoteSessionID != "" {
 		data["remote_session_id"] = f.RemoteSessionID
 	}
-	for key, value := range f.Data {
-		data[key] = value
-	}
 	return types.TaskEvent{
 		EventID:   eventID,
 		TaskID:    f.OriginProxyTaskID,
-		Seq:       f.Seq,
+		Seq:       localSeq,
 		Kind:      f.Kind,
 		State:     f.State,
 		Source:    types.EventSourceTransport,
 		Message:   f.Message,
 		Data:      data,
 		CreatedAt: f.OccurredAt,
+	}
+}
+
+// isReservedEventDataKey protects origin-side audit fields from peer payload data.
+func isReservedEventDataKey(key string) bool {
+	switch key {
+	case "destination_node_id", "destination_task_id", "destination_thread_id", "remote_execution_id", "remote_session_id", "remote_event_seq":
+		return true
+	default:
+		return false
 	}
 }
 
