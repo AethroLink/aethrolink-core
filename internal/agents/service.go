@@ -11,7 +11,11 @@ import (
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
 
-var ErrAgentNotFound = errors.New("agent not found")
+var (
+	ErrAgentNotFound               = errors.New("agent not found")
+	ErrRemoteTargetAmbiguous       = errors.New("ambiguous remote target")
+	ErrRemoteTargetNotDispatchable = errors.New("remote target is not dispatchable")
+)
 
 type Service struct {
 	store *storage.SQLiteStore
@@ -111,6 +115,22 @@ func (s *Service) ResolveRuntime(ctx context.Context, targetID string) (atypes.R
 			return agentToRuntimeSpec(agent), nil
 		}
 	}
+	remoteTargets, err := s.remoteRuntimeSpecs(ctx)
+	if err != nil {
+		return atypes.RuntimeSpec{}, err
+	}
+	matches := make([]atypes.RuntimeSpec, 0, 1)
+	for _, runtime := range remoteTargets {
+		if runtime.TargetID == targetID {
+			matches = append(matches, runtime)
+		}
+	}
+	if len(matches) > 1 {
+		return atypes.RuntimeSpec{}, fmt.Errorf("%w: %s", ErrRemoteTargetAmbiguous, targetID)
+	}
+	if len(matches) == 1 {
+		return atypes.RuntimeSpec{}, fmt.Errorf("%w: %s", ErrRemoteTargetNotDispatchable, targetID)
+	}
 	return atypes.RuntimeSpec{}, fmt.Errorf("target not found: %s", targetID)
 }
 
@@ -125,6 +145,33 @@ func (s *Service) ListRuntimes(ctx context.Context) ([]atypes.RuntimeSpec, error
 		// orchestrator can launch them on demand during task dispatch.
 		out = append(out, agentToRuntimeSpec(agent))
 	}
+	remoteTargets, err := s.remoteRuntimeSpecs(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out = append(out, remoteTargets...)
+	return out, nil
+}
+
+// remoteRuntimeSpecs folds cached peer-owned targets into local discovery output.
+func (s *Service) remoteRuntimeSpecs(ctx context.Context) ([]atypes.RuntimeSpec, error) {
+	peers, err := s.store.ListPeers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	peerByID := make(map[string]atypes.PeerRecord, len(peers))
+	for _, peer := range peers {
+		peerByID[peer.PeerID] = peer
+	}
+	targets, err := s.store.ListPeerTargets(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]atypes.RuntimeSpec, 0, len(targets))
+	for _, target := range targets {
+		peer := peerByID[target.PeerID]
+		out = append(out, peerTargetToRuntimeSpec(target, peer))
+	}
 	return out, nil
 }
 
@@ -138,6 +185,20 @@ func agentToRuntimeSpec(agent atypes.AgentRecord) atypes.RuntimeSpec {
 		Launch:       agent.Launch,
 		Defaults:     cloneMap(agent.Defaults),
 		Capabilities: append([]string(nil), agent.Capabilities...),
+		Owner:        atypes.TargetOwnerLocal,
+	}
+}
+
+// peerTargetToRuntimeSpec exposes cached remote targets without adapter details.
+func peerTargetToRuntimeSpec(target atypes.PeerTargetRecord, peer atypes.PeerRecord) atypes.RuntimeSpec {
+	return atypes.RuntimeSpec{
+		TargetID:     target.TargetID,
+		Defaults:     cloneMap(target.Defaults),
+		Capabilities: append([]string(nil), target.Capabilities...),
+		Owner:        atypes.TargetOwnerRemote,
+		PeerID:       target.PeerID,
+		PeerBaseURL:  peer.BaseURL,
+		PeerStatus:   peer.Status,
 	}
 }
 
