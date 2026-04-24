@@ -909,7 +909,21 @@ Inspection rules:
 - bounded auto-handoff remains origin-orchestrator owned; `max_turns` limits cross-node continuation the same way it limits local continuation
 - remote session reuse prediction is best-effort and must not be treated as a distributed scheduling guarantee
 
-## 4.14 POST /v1/node/tasks/{task_id}/resume
+## 4.14 Restart-visible remote relay interruption
+
+On origin node startup, persisted `remote_task_bindings` rows with non-terminal relay status are treated as interrupted. The origin must not claim that remote work resumed automatically after process restart because the origin may have missed destination terminal events while offline.
+
+Restart reconciliation rules:
+
+- non-terminal relay binding statuses such as `relay_pending` and `relay_streaming` become `relay_interrupted`
+- terminal binding statuses `completed`, `failed`, and `cancelled` remain unchanged
+- the origin proxy task receives a `task.failed` transport event with message `Remote relay interrupted by origin restart`
+- the task event data includes `remote_peer_id`, `destination_node_id`, `destination_task_id`, and `relay_status: "relay_interrupted"`
+- the destination task identity remains inspectable, but recovery requires an explicit future resume/reconcile action instead of implicit auto-resume
+
+This is an honest recovery marker, not exactly-once distributed execution recovery.
+
+## 4.15 POST /v1/node/tasks/{task_id}/resume
 
 Apply a peer `task.resume` control message to a destination-owned task.
 
@@ -927,7 +941,7 @@ Status: `202 Accepted`
 
 Errors use typed `error` payloads with `message_type_hint: "task.resume"`.
 
-## 4.15 POST /v1/node/tasks/{task_id}/cancel
+## 4.16 POST /v1/node/tasks/{task_id}/cancel
 
 Apply a peer `task.cancel` control message to a destination-owned task.
 

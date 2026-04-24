@@ -51,6 +51,99 @@ func TestNewOrchestratorFailsWhenRestartReconciliationFails(t *testing.T) {
 	}
 }
 
+func TestNewOrchestratorMarksRemoteRelayInterruptionOnRestart(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := storage.Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := atypes.NowUTC()
+	task := atypes.TaskRecord{TaskID: "task-origin", ConversationID: "conv", Sender: "operator", Intent: "code.change", RequestedAgentID: "remote-coder", ResolvedAgentID: "remote-coder", Status: atypes.TaskStatusRunning, CreatedAt: now, UpdatedAt: now}
+	if err := store.InsertTask(ctx, task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	binding := atypes.RemoteTaskBinding{LocalTaskID: task.TaskID, RemotePeerID: "peer-b", DestinationNodeID: "node-b", DestinationTaskID: "task-destination", Status: atypes.RemoteRelayStatusStreaming, CreatedAt: now, UpdatedAt: now}
+	if err := store.UpsertRemoteTaskBinding(ctx, binding); err != nil {
+		t.Fatalf("upsert remote binding: %v", err)
+	}
+
+	if _, err := NewOrchestratorWithNodeID(staticDiscovery{}, store, nil, nil, "node-a"); err != nil {
+		t.Fatalf("new orchestrator: %v", err)
+	}
+	loadedTask, err := store.GetTask(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if loadedTask.Status != atypes.TaskStatusFailed {
+		t.Fatalf("expected origin proxy task failed after interrupted relay, got %q", loadedTask.Status)
+	}
+	loadedBinding, err := store.GetRemoteTaskBinding(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("get remote binding: %v", err)
+	}
+	if loadedBinding.Status != atypes.RemoteRelayStatusInterrupted {
+		t.Fatalf("expected interrupted binding status, got %q", loadedBinding.Status)
+	}
+	events, err := store.ListEvents(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 || !strings.Contains(events[0].Message, "Remote relay interrupted by origin restart") {
+		t.Fatalf("expected restart interruption event, got %+v", events)
+	}
+}
+
+func TestNewOrchestratorDoesNotFailTerminalRemoteRelayOnRestart(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := storage.Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := atypes.NowUTC()
+	task := atypes.TaskRecord{TaskID: "task-completed", ConversationID: "conv", Sender: "operator", Intent: "code.change", RequestedAgentID: "remote-coder", ResolvedAgentID: "remote-coder", Status: atypes.TaskStatusCompleted, CreatedAt: now, UpdatedAt: now}
+	if err := store.InsertTask(ctx, task); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+	if err := store.AppendEvent(ctx, atypes.TaskEvent{TaskID: task.TaskID, Seq: 1, Kind: atypes.TaskEventTaskCompleted, State: atypes.TaskStatusCompleted, Source: atypes.EventSourceRuntime, Message: "remote done", CreatedAt: now}); err != nil {
+		t.Fatalf("append terminal event: %v", err)
+	}
+	binding := atypes.RemoteTaskBinding{LocalTaskID: task.TaskID, RemotePeerID: "peer-b", DestinationNodeID: "node-b", DestinationTaskID: "task-destination", Status: atypes.RemoteRelayStatusStreaming, CreatedAt: now, UpdatedAt: now}
+	if err := store.UpsertRemoteTaskBinding(ctx, binding); err != nil {
+		t.Fatalf("upsert remote binding: %v", err)
+	}
+
+	if _, err := NewOrchestratorWithNodeID(staticDiscovery{}, store, nil, nil, "node-a"); err != nil {
+		t.Fatalf("new orchestrator: %v", err)
+	}
+	loadedTask, err := store.GetTask(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("get task: %v", err)
+	}
+	if loadedTask.Status != atypes.TaskStatusCompleted {
+		t.Fatalf("expected completed proxy task to stay completed, got %q", loadedTask.Status)
+	}
+	loadedBinding, err := store.GetRemoteTaskBinding(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("get remote binding: %v", err)
+	}
+	if loadedBinding.Status != string(atypes.TaskStatusCompleted) {
+		t.Fatalf("expected stale relay binding repaired to completed, got %q", loadedBinding.Status)
+	}
+	events, err := store.ListEvents(ctx, task.TaskID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(events) != 1 || events[0].Kind != atypes.TaskEventTaskCompleted {
+		t.Fatalf("expected only original terminal event, got %+v", events)
+	}
+}
+
 func TestRouteRequestRejectsExplicitRemoteRuntimeBeforeRelayTransport(t *testing.T) {
 	discovery := staticDiscovery{resolve: atypes.RuntimeSpec{TargetID: "researcher", Owner: atypes.TargetOwnerRemote, Capabilities: []string{"research.summary"}}}
 	orchestrator := &Orchestrator{discovery: discovery}

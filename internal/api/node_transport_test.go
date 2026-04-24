@@ -217,6 +217,10 @@ func TestNodeTaskEventsEndpointDoesNotMissTerminalEventDuringReplay(t *testing.T
 	if last.State != atypes.TaskStatusCancelled || last.DestinationTaskID != accepted.DestinationTaskID {
 		t.Fatalf("unexpected terminal frame: %+v", last)
 	}
+	minReplayFrames := len(history) + 10000
+	if len(frames) < minReplayFrames {
+		t.Fatalf("expected replay frames to be preserved before live terminal event, got %d want at least %d", len(frames), minReplayFrames)
+	}
 }
 
 func TestNodeTaskResumeEndpointContinuesDestinationTask(t *testing.T) {

@@ -53,11 +53,43 @@ func NewOrchestratorWithNodeID(discovery atypes.DiscoveryProvider, store *storag
 	}
 	o := &Orchestrator{discovery: discovery, store: store, runtime: runtimeManager, adapters: adapterRegistry, nodeID: nodeID, subscribers: map[int]subscriber{}}
 	// Restart reconciliation runs once at boot so persisted non-terminal threads
-	// are marked honestly before operators continue them.
-	if err := o.store.MarkInterruptedThreadsOnRestart(context.Background()); err != nil {
-		return nil, fmt.Errorf("mark interrupted threads on restart: %w", err)
+	// and in-flight relays are marked honestly before operators continue them.
+	if err := o.reconcileRestartState(context.Background()); err != nil {
+		return nil, err
 	}
 	return o, nil
+}
+
+// reconcileRestartState surfaces work that may have been interrupted by process restart.
+func (o *Orchestrator) reconcileRestartState(ctx context.Context) error {
+	if err := o.store.MarkInterruptedThreadsOnRestart(ctx); err != nil {
+		return fmt.Errorf("mark interrupted threads on restart: %w", err)
+	}
+	bindings, err := o.store.MarkInterruptedRemoteRelayBindingsOnRestart(ctx)
+	if err != nil {
+		return fmt.Errorf("mark interrupted remote relays on restart: %w", err)
+	}
+	for _, binding := range bindings {
+		task, err := o.store.GetTask(ctx, binding.LocalTaskID)
+		if err != nil {
+			return fmt.Errorf("load remote relay proxy task %s: %w", binding.LocalTaskID, err)
+		}
+		if task.Status.IsTerminal() {
+			// Terminal proxy tasks already reflect the operator-visible outcome; repair
+			// the stale relay binding instead of downgrading the task after restart.
+			if err := o.store.UpdateRemoteTaskBindingStatus(ctx, binding.LocalTaskID, string(task.Status)); err != nil {
+				return fmt.Errorf("repair terminal remote relay %s: %w", binding.LocalTaskID, err)
+			}
+			continue
+		}
+		remote := &atypes.RemoteHandle{TaskID: binding.LocalTaskID, Binding: binding.DestinationTaskID}
+		taskErr := &atypes.TaskError{Reason: "remote relay interrupted", Detail: "origin node restarted before observing destination terminal state"}
+		_, err = o.appendEvent(ctx, binding.LocalTaskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceTransport, "Remote relay interrupted by origin restart", map[string]any{"remote_peer_id": binding.RemotePeerID, "destination_node_id": binding.DestinationNodeID, "destination_task_id": binding.DestinationTaskID, "relay_status": atypes.RemoteRelayStatusInterrupted}, remote, taskErr, "")
+		if err != nil {
+			return fmt.Errorf("record interrupted remote relay %s: %w", binding.LocalTaskID, err)
+		}
+	}
+	return nil
 }
 
 func mergeMaps(base, override map[string]any) map[string]any {
@@ -297,7 +329,7 @@ func (o *Orchestrator) relayRemoteTask(taskID string, req atypes.TaskCreateReque
 		return
 	}
 	now := atypes.NowUTC()
-	binding := atypes.RemoteTaskBinding{LocalTaskID: taskID, RemotePeerID: remoteSpec.PeerID, DestinationNodeID: accepted.DestinationNodeID, DestinationTaskID: accepted.DestinationTaskID, DestinationThreadID: accepted.DestinationThreadID, Status: string(atypes.TaskStatusDispatching), CreatedAt: now, UpdatedAt: now}
+	binding := atypes.RemoteTaskBinding{LocalTaskID: taskID, RemotePeerID: remoteSpec.PeerID, DestinationNodeID: accepted.DestinationNodeID, DestinationTaskID: accepted.DestinationTaskID, DestinationThreadID: accepted.DestinationThreadID, Status: atypes.RemoteRelayStatusStreaming, CreatedAt: now, UpdatedAt: now}
 	if err := o.store.UpsertRemoteTaskBinding(ctx, binding); err != nil {
 		taskErr := &atypes.TaskError{Reason: "remote binding failed", Detail: err.Error()}
 		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceStorage, taskErr.Reason, map[string]any{"detail": taskErr.Detail}, nil, taskErr, "")
@@ -326,6 +358,7 @@ func (o *Orchestrator) mirrorRemoteEvents(ctx context.Context, client *nodetrans
 		}
 		return nil
 	}); err != nil {
+		_ = o.store.UpdateRemoteTaskBindingStatus(ctx, taskID, atypes.RemoteRelayStatusInterrupted)
 		taskErr := &atypes.TaskError{Reason: "remote event stream failed", Detail: err.Error()}
 		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceTransport, taskErr.Reason, map[string]any{"remote_peer_id": remoteSpec.PeerID, "detail": taskErr.Detail}, remote, taskErr, "")
 		return

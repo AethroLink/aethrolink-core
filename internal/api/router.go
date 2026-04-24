@@ -143,20 +143,45 @@ func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusInternalServerError, nodeproto.MessageTypeTaskEvent, "streaming_unsupported", errors.New("streaming unsupported"), false)
 		return
 	}
+	// Flush headers before replay so peers can issue resume/cancel while history streams.
+	flusher.Flush()
 	var lastReplaySeq int64
 	terminalReplayed := false
+	var bufferedLive []atypes.TaskEvent
 	for _, event := range history {
-		if event.Seq > lastReplaySeq {
-			lastReplaySeq = event.Seq
+		if event.Seq <= lastReplaySeq {
+			continue
 		}
+		lastReplaySeq = event.Seq
 		if event.State.IsTerminal() {
 			terminalReplayed = true
 		}
 		writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, event))
 		flusher.Flush()
+		select {
+		case liveEvent, ok := <-eventsCh:
+			if !ok {
+				return
+			}
+			// Buffer live events during replay so a high sequence cannot hide lower
+			// persisted history frames that the origin has not mirrored yet.
+			bufferedLive = append(bufferedLive, liveEvent)
+		default:
+		}
 	}
 	if terminalReplayed {
 		return
+	}
+	for _, event := range bufferedLive {
+		if event.Seq <= lastReplaySeq {
+			continue
+		}
+		lastReplaySeq = event.Seq
+		writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, event))
+		flusher.Flush()
+		if event.State.IsTerminal() {
+			return
+		}
 	}
 	ctx := r.Context()
 	for {
@@ -170,6 +195,7 @@ func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
 			if event.Seq <= lastReplaySeq {
 				continue
 			}
+			lastReplaySeq = event.Seq
 			writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, event))
 			flusher.Flush()
 			if event.State.IsTerminal() {
