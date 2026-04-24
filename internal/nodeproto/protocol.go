@@ -35,16 +35,16 @@ func (r NodeHealthResponse) MessageType() MessageType {
 
 // TaskSubmitRequest is the typed remote execution request sent by an origin node.
 type TaskSubmitRequest struct {
-	OriginNodeID      string               `json:"origin_node_id"`
-	OriginProxyTaskID string               `json:"origin_proxy_task_id"`
-	OriginThreadID    string               `json:"origin_thread_id,omitempty"`
-	TargetAgentID     string               `json:"target_agent_id"`
-	Intent            string               `json:"intent"`
-	Payload           map[string]any       `json:"payload"`
-	RuntimeOptions    map[string]any       `json:"runtime_options,omitempty"`
-	Trace             types.TraceContext   `json:"trace"`
-	Delivery          types.DeliveryPolicy `json:"delivery"`
-	SubmittedAt       time.Time            `json:"submitted_at"`
+	OriginNodeID      string                `json:"origin_node_id"`
+	OriginProxyTaskID string                `json:"origin_proxy_task_id"`
+	OriginThreadID    string                `json:"origin_thread_id,omitempty"`
+	TargetAgentID     string                `json:"target_agent_id"`
+	Intent            string                `json:"intent"`
+	Payload           map[string]any        `json:"payload"`
+	RuntimeOptions    map[string]any        `json:"runtime_options,omitempty"`
+	Trace             types.TraceContext    `json:"trace"`
+	Delivery          *types.DeliveryPolicy `json:"delivery,omitempty"`
+	SubmittedAt       time.Time             `json:"submitted_at"`
 }
 
 // MessageType returns the wire discriminator without requiring generic envelopes.

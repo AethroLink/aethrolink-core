@@ -9,6 +9,7 @@ import (
 )
 
 func TestTaskSubmitRequestCarriesOriginAndDestinationOwnership(t *testing.T) {
+	delivery := types.DefaultDeliveryPolicy()
 	submit := TaskSubmitRequest{
 		OriginNodeID:      "node-a",
 		OriginProxyTaskID: "task-local-1",
@@ -18,7 +19,7 @@ func TestTaskSubmitRequestCarriesOriginAndDestinationOwnership(t *testing.T) {
 		Payload:           map[string]any{"topic": "multinode"},
 		RuntimeOptions:    map[string]any{"executor": "research"},
 		Trace:             types.TraceContext{TraceID: "trace-1"},
-		Delivery:          types.DefaultDeliveryPolicy(),
+		Delivery:          &delivery,
 		SubmittedAt:       time.Date(2026, 4, 24, 7, 0, 0, 0, time.UTC),
 	}
 

@@ -454,6 +454,7 @@ Rules:
 - destination node owns the real execution task it creates after acceptance
 - `target_agent_id` is resolved on the destination node
 - `intent` and `payload` are required
+- `delivery` is optional; if omitted, the destination applies the same default delivery policy as local task creation
 
 #### task.accepted
 
@@ -867,6 +868,7 @@ data: {"origin_proxy_task_id":"01JY0R4R2V2QKBR8Q2YQ9BMS1V","destination_node_id"
 Rules:
 
 - destination events are replayed from persisted history before live events
+- the destination subscribes before replaying history so terminal events committed during replay are not missed
 - `id` equals the destination event `seq`
 - the stream closes after a terminal event
 - frames include destination ownership fields and preserve event source/message/data

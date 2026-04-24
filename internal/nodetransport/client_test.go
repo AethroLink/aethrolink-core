@@ -57,7 +57,8 @@ func TestHTTPClientCallsNodeTransportEndpoints(t *testing.T) {
 	if err != nil || health.NodeID != "node-b" {
 		t.Fatalf("health failed: health=%+v err=%v", health, err)
 	}
-	accepted, err := client.SubmitTask(ctx, nodeproto.TaskSubmitRequest{OriginProxyTaskID: "proxy-1", TargetAgentID: "mock_hermes", Intent: "code.patch", Payload: map[string]any{"mode": "success"}, Trace: atypes.DefaultTraceContext(), Delivery: atypes.DefaultDeliveryPolicy(), SubmittedAt: atypes.NowUTC()})
+	delivery := atypes.DefaultDeliveryPolicy()
+	accepted, err := client.SubmitTask(ctx, nodeproto.TaskSubmitRequest{OriginProxyTaskID: "proxy-1", TargetAgentID: "mock_hermes", Intent: "code.patch", Payload: map[string]any{"mode": "success"}, Trace: atypes.DefaultTraceContext(), Delivery: &delivery, SubmittedAt: atypes.NowUTC()})
 	if err != nil || accepted.DestinationTaskID != "dest-1" {
 		t.Fatalf("submit failed: accepted=%+v err=%v", accepted, err)
 	}

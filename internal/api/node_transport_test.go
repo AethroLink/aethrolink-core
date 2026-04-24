@@ -24,6 +24,12 @@ import (
 
 func setupNodeTransportServer(t *testing.T, nodeID string) (*httptest.Server, *core.Orchestrator) {
 	t.Helper()
+	server, orchestrator, _ := setupNodeTransportServerWithStore(t, nodeID)
+	return server, orchestrator
+}
+
+func setupNodeTransportServerWithStore(t *testing.T, nodeID string) (*httptest.Server, *core.Orchestrator, *storage.SQLiteStore) {
+	t.Helper()
 	tmp := t.TempDir()
 	root := filepath.Clean(filepath.Join("..", ".."))
 	store, err := storage.Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1")
@@ -56,7 +62,7 @@ func setupNodeTransportServer(t *testing.T, nodeID string) (*httptest.Server, *c
 		server.Close()
 		_ = store.Close()
 	})
-	return server, orchestrator
+	return server, orchestrator, store
 }
 
 func TestNodeHealthEndpointReturnsDestinationIdentity(t *testing.T) {
@@ -81,6 +87,7 @@ func TestNodeHealthEndpointReturnsDestinationIdentity(t *testing.T) {
 
 func TestNodeTaskSubmitEndpointAcceptsRemoteSubmitAndExecutesLocally(t *testing.T) {
 	server, _ := setupNodeTransportServer(t, "node-b")
+	delivery := atypes.DefaultDeliveryPolicy()
 	submit := nodeproto.TaskSubmitRequest{
 		OriginNodeID:      "node-a",
 		OriginProxyTaskID: "proxy-task-1",
@@ -90,7 +97,7 @@ func TestNodeTaskSubmitEndpointAcceptsRemoteSubmitAndExecutesLocally(t *testing.
 		Payload:           map[string]any{"mode": "success"},
 		RuntimeOptions:    map[string]any{"executor": "coder"},
 		Trace:             atypes.TraceContext{TraceID: "trace-node-submit"},
-		Delivery:          atypes.DefaultDeliveryPolicy(),
+		Delivery:          &delivery,
 		SubmittedAt:       time.Now().UTC(),
 	}
 	body, err := json.Marshal(submit)
@@ -123,6 +130,35 @@ func TestNodeTaskSubmitEndpointAcceptsRemoteSubmitAndExecutesLocally(t *testing.
 	}
 }
 
+func TestNodeTaskSubmitEndpointUsesDefaultDeliveryWhenPeerOmitsPolicy(t *testing.T) {
+	server, _ := setupNodeTransportServer(t, "node-b")
+	body := []byte(`{
+		"origin_node_id":"node-a",
+		"origin_proxy_task_id":"proxy-task-omitted-delivery",
+		"target_agent_id":"mock_hermes",
+		"intent":"code.patch",
+		"payload":{"mode":"success"},
+		"runtime_options":{"executor":"coder"},
+		"trace":{"trace_id":"trace-omitted-delivery"}
+	}`)
+
+	resp, err := http.Post(server.URL+"/v1/node/tasks", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("submit node task without delivery: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 202, got %d", resp.StatusCode)
+	}
+	var accepted nodeproto.TaskAcceptedResponse
+	if err := json.NewDecoder(resp.Body).Decode(&accepted); err != nil {
+		t.Fatalf("decode accepted response: %v", err)
+	}
+
+	// Omitted peer delivery must behave like /v1/tasks and launch an idle runtime.
+	_ = waitForStatus(t, server.URL, accepted.DestinationTaskID, "completed")
+}
+
 func TestNodeTaskEventsEndpointStreamsTypedEventFrames(t *testing.T) {
 	server, _ := setupNodeTransportServer(t, "node-b")
 	accepted := submitNodeTask(t, server.URL, map[string]any{"mode": "success"})
@@ -143,6 +179,43 @@ func TestNodeTaskEventsEndpointStreamsTypedEventFrames(t *testing.T) {
 	last := frames[len(frames)-1]
 	if last.OriginProxyTaskID != "proxy-task-1" || last.DestinationNodeID != "node-b" || last.DestinationTaskID != accepted.DestinationTaskID || last.State != atypes.TaskStatusCompleted {
 		t.Fatalf("unexpected terminal event frame: %+v", last)
+	}
+}
+
+func TestNodeTaskEventsEndpointDoesNotMissTerminalEventDuringReplay(t *testing.T) {
+	server, orchestrator, store := setupNodeTransportServerWithStore(t, "node-b")
+	accepted := submitNodeTask(t, server.URL, map[string]any{"mode": "await_then_resume"})
+	_ = waitForStatus(t, server.URL, accepted.DestinationTaskID, "awaiting_input")
+	history, err := orchestrator.ListEvents(context.Background(), accepted.DestinationTaskID)
+	if err != nil {
+		t.Fatalf("list seed events: %v", err)
+	}
+	for i := 0; i < 10000; i++ {
+		// Extra non-terminal history widens the replay window for the race under test.
+		event := atypes.TaskEvent{EventID: atypes.NewID(), TaskID: accepted.DestinationTaskID, Seq: int64(len(history) + i + 1), Kind: atypes.TaskEventTaskAwaitingInput, State: atypes.TaskStatusAwaitingInput, Source: atypes.EventSourceAdapter, Message: "replay padding", Data: map[string]any{"index": i}, CreatedAt: atypes.NowUTC()}
+		if err := store.AppendEvent(context.Background(), event); err != nil {
+			t.Fatalf("append replay padding event: %v", err)
+		}
+	}
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get(server.URL + "/v1/node/tasks/" + accepted.DestinationTaskID + "/events?origin_proxy_task_id=proxy-task-1")
+	if err != nil {
+		t.Fatalf("stream node task events: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	cancelNodeTask(t, server.URL, accepted.DestinationTaskID)
+
+	frames, err := readNodeEventFramesUntilState(resp, atypes.TaskStatusCancelled)
+	if err != nil {
+		t.Fatalf("expected cancelled frame before stream timeout: %v", err)
+	}
+	last := frames[len(frames)-1]
+	if last.State != atypes.TaskStatusCancelled || last.DestinationTaskID != accepted.DestinationTaskID {
+		t.Fatalf("unexpected terminal frame: %+v", last)
 	}
 }
 
@@ -221,6 +294,7 @@ func TestNodeTaskSubmitEndpointReturnsTypedProtocolError(t *testing.T) {
 
 func submitNodeTask(t *testing.T, baseURL string, payload map[string]any) nodeproto.TaskAcceptedResponse {
 	t.Helper()
+	delivery := atypes.DefaultDeliveryPolicy()
 	submit := nodeproto.TaskSubmitRequest{
 		OriginNodeID:      "node-a",
 		OriginProxyTaskID: "proxy-task-1",
@@ -230,7 +304,7 @@ func submitNodeTask(t *testing.T, baseURL string, payload map[string]any) nodepr
 		Payload:           payload,
 		RuntimeOptions:    map[string]any{"executor": "coder"},
 		Trace:             atypes.TraceContext{TraceID: "trace-node-submit"},
-		Delivery:          atypes.DefaultDeliveryPolicy(),
+		Delivery:          &delivery,
 		SubmittedAt:       time.Now().UTC(),
 	}
 	body, err := json.Marshal(submit)
@@ -250,6 +324,43 @@ func submitNodeTask(t *testing.T, baseURL string, payload map[string]any) nodepr
 		t.Fatalf("decode accepted response: %v", err)
 	}
 	return accepted
+}
+
+func cancelNodeTask(t *testing.T, baseURL, taskID string) {
+	t.Helper()
+	cancel := nodeproto.TaskCancelRequest{OriginNodeID: "node-a", OriginProxyTaskID: "proxy-task-1", DestinationTaskID: taskID, Reason: "race regression", Trace: atypes.DefaultTraceContext(), RequestedAt: time.Now().UTC()}
+	body, err := json.Marshal(cancel)
+	if err != nil {
+		t.Fatalf("marshal cancel: %v", err)
+	}
+	resp, err := http.Post(baseURL+"/v1/node/tasks/"+taskID+"/cancel", "application/json", bytes.NewReader(body))
+	if err != nil {
+		t.Fatalf("cancel node task: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusAccepted {
+		t.Fatalf("expected 200 or 202, got %d", resp.StatusCode)
+	}
+}
+
+func readNodeEventFramesUntilState(resp *http.Response, state atypes.TaskStatus) ([]nodeproto.TaskEventFrame, error) {
+	var frames []nodeproto.TaskEventFrame
+	scanner := bufio.NewScanner(resp.Body)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		var frame nodeproto.TaskEventFrame
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame); err != nil {
+			return frames, err
+		}
+		frames = append(frames, frame)
+		if frame.State == state {
+			return frames, nil
+		}
+	}
+	return frames, scanner.Err()
 }
 
 func decodeSSETaskEventFrames(t *testing.T, resp *http.Response) []nodeproto.TaskEventFrame {

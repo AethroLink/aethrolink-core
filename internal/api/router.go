@@ -88,14 +88,13 @@ func (s *Server) handleNodeTaskSubmit(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskSubmit, "invalid_task_submit", err, false)
 		return
 	}
-	delivery := req.Delivery
 	task, err := s.orchestrator.CreateTask(r.Context(), atypes.TaskCreateRequest{
 		Sender:         req.OriginNodeID,
 		TargetAgentID:  req.TargetAgentID,
 		Intent:         req.Intent,
 		Payload:        req.Payload,
 		RuntimeOptions: req.RuntimeOptions,
-		Delivery:       &delivery,
+		Delivery:       req.Delivery,
 		Metadata: map[string]any{
 			"origin_node_id":       req.OriginNodeID,
 			"origin_proxy_task_id": req.OriginProxyTaskID,
@@ -123,6 +122,9 @@ func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusBadRequest, nodeproto.MessageTypeTaskEvent, "invalid_task_events", errors.New("origin_proxy_task_id is required"), false)
 		return
 	}
+	// Subscribe before replay so events committed during history reads cannot be lost.
+	eventsCh, cancel := s.orchestrator.Subscribe(taskID)
+	defer cancel()
 	task, err := s.orchestrator.GetTask(r.Context(), taskID)
 	if err != nil {
 		writeNodeError(w, errorStatus(err), nodeproto.MessageTypeTaskEvent, "task_events_failed", err, true)
@@ -141,15 +143,21 @@ func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
 		writeNodeError(w, http.StatusInternalServerError, nodeproto.MessageTypeTaskEvent, "streaming_unsupported", errors.New("streaming unsupported"), false)
 		return
 	}
+	var lastReplaySeq int64
+	terminalReplayed := false
 	for _, event := range history {
+		if event.Seq > lastReplaySeq {
+			lastReplaySeq = event.Seq
+		}
+		if event.State.IsTerminal() {
+			terminalReplayed = true
+		}
 		writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, event))
 		flusher.Flush()
 	}
-	if task.Status.IsTerminal() {
+	if terminalReplayed {
 		return
 	}
-	eventsCh, cancel := s.orchestrator.Subscribe(taskID)
-	defer cancel()
 	ctx := r.Context()
 	for {
 		select {
@@ -158,6 +166,9 @@ func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
 		case event, ok := <-eventsCh:
 			if !ok {
 				return
+			}
+			if event.Seq <= lastReplaySeq {
+				continue
 			}
 			writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, event))
 			flusher.Flush()
