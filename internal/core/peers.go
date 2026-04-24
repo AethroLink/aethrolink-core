@@ -83,6 +83,7 @@ func (o *Orchestrator) SyncPeerTargets(ctx context.Context, peerID string) (atyp
 		return atypes.PeerSyncResponse{}, err
 	}
 	cached := make([]atypes.PeerTargetRecord, 0, len(targets))
+	cachedIDs := make([]string, 0, len(targets))
 	for _, target := range targets {
 		if target.Owner == atypes.TargetOwnerRemote {
 			continue
@@ -101,6 +102,10 @@ func (o *Orchestrator) SyncPeerTargets(ctx context.Context, peerID string) (atyp
 			return atypes.PeerSyncResponse{}, err
 		}
 		cached = append(cached, record)
+		cachedIDs = append(cachedIDs, record.TargetID)
+	}
+	if err := o.store.DeletePeerTargetsExcept(ctx, peer.PeerID, cachedIDs); err != nil {
+		return atypes.PeerSyncResponse{}, err
 	}
 	return atypes.PeerSyncResponse{Peer: peer, Targets: cached}, nil
 }
@@ -109,6 +114,9 @@ func (o *Orchestrator) SyncPeerTargets(ctx context.Context, peerID string) (atyp
 func normalizePeerBaseURL(raw string) (string, error) {
 	parsed, err := url.Parse(raw)
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return "", ErrPeerBaseURLInvalid
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
 		return "", ErrPeerBaseURLInvalid
 	}
 	return parsed.String(), nil

@@ -157,6 +157,19 @@ func TestPeerSyncCachesDestinationTargetsAndEnablesOriginRelay(t *testing.T) {
 	}
 }
 
+func TestPeerSyncUnknownPeerReturnsNotFound(t *testing.T) {
+	origin, _, _ := setupNodeTransportServerWithoutAgents(t, "node-a")
+
+	resp, err := http.Post(origin.URL+"/v1/peers/missing/sync", "application/json", nil)
+	if err != nil {
+		t.Fatalf("sync missing peer: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("expected missing peer sync 404, got %d", resp.StatusCode)
+	}
+}
+
 func TestNodeHealthEndpointReturnsDestinationIdentity(t *testing.T) {
 	server, _ := setupNodeTransportServer(t, "node-b")
 

@@ -624,7 +624,7 @@ func asString(m map[string]any, key string) string {
 
 func ErrorStatus(err error) int {
 	switch {
-	case errors.Is(err, ErrTaskNotFound), errors.Is(err, ErrTargetAgentNotFound), errors.Is(err, ErrRouteNotFound), errors.Is(err, ErrThreadNotFound):
+	case errors.Is(err, ErrTaskNotFound), errors.Is(err, ErrTargetAgentNotFound), errors.Is(err, ErrRouteNotFound), errors.Is(err, ErrThreadNotFound), errors.Is(err, ErrPeerNotFound):
 		return 404
 	case errors.Is(err, ErrRouteAmbiguous):
 		return 409
