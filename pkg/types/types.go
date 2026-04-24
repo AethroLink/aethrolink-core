@@ -289,6 +289,10 @@ type RuntimeSpec struct {
 	Launch       LaunchSpec     `json:"launch" yaml:"launch"`
 	Defaults     map[string]any `json:"defaults,omitempty" yaml:"defaults,omitempty"`
 	Capabilities []string       `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	Owner        TargetOwner    `json:"owner,omitempty" yaml:"-"`
+	PeerID       string         `json:"peer_id,omitempty" yaml:"-"`
+	PeerBaseURL  string         `json:"peer_base_url,omitempty" yaml:"-"`
+	PeerStatus   PeerStatus     `json:"peer_status,omitempty" yaml:"-"`
 }
 
 type RouteSpec struct {

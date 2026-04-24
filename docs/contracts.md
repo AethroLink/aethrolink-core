@@ -366,7 +366,54 @@ This type is internal in v0.1 but must exist now for future transport support. M
 }
 ```
 
-### 3.10 Node Protocol Payloads
+### 3.10 Peer and Remote Target Records
+
+Phase 2 introduces local persistence for static peers and cached peer-owned targets. Discovery remains local-queryable: local agents and peer targets are both returned as runtime specs with explicit ownership metadata.
+
+#### PeerRecord
+
+```json
+{
+  "peer_id": "node-b",
+  "display_name": "Research node",
+  "base_url": "http://127.0.0.1:9092",
+  "status": "offline",
+  "capabilities": ["node.targets"],
+  "metadata": {},
+  "registered_at": "2026-04-24T08:00:00Z",
+  "updated_at": "2026-04-24T08:00:00Z",
+  "last_seen_at": "2026-04-24T08:00:00Z"
+}
+```
+
+Rules:
+
+- peer records are durable static registrations
+- `status` is liveness only; offline peers remain discoverable
+- `base_url` is the first HTTP static-peer transport address
+
+#### PeerTargetRecord
+
+```json
+{
+  "peer_id": "node-b",
+  "target_id": "researcher",
+  "display_name": "Remote researcher",
+  "capabilities": ["research.summary"],
+  "defaults": { "executor": "research" },
+  "metadata": {},
+  "status": "available",
+  "synced_at": "2026-04-24T08:00:00Z"
+}
+```
+
+Rules:
+
+- peer targets are cached exported targets from the owning peer
+- target existence is independent of current peer liveness
+- discovery exposes remote targets as `RuntimeSpec` with `owner=remote`, `peer_id`, `peer_base_url`, and `peer_status`
+
+### 3.11 Node Protocol Payloads
 
 `internal/nodeproto` defines the first static-peer HTTP multinode contract. These payloads keep remote transport separate from runtime adapters and make origin-vs-destination ownership explicit.
 

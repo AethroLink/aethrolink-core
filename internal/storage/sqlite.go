@@ -99,6 +99,10 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_task_events_task_seq ON task_events(task_id, seq)`,
 		`CREATE TABLE IF NOT EXISTS artifacts (artifact_id TEXT PRIMARY KEY, media_type TEXT NOT NULL, relative_path TEXT NOT NULL, size_bytes INTEGER NOT NULL, sha256 TEXT NOT NULL, created_at TEXT NOT NULL)`,
 		`CREATE TABLE IF NOT EXISTS launch_history (launch_id TEXT PRIMARY KEY, target_id TEXT NOT NULL, subcontext_key TEXT, command_json TEXT NOT NULL, pid TEXT, status TEXT NOT NULL, error_text TEXT, started_at TEXT NOT NULL, ended_at TEXT)`,
+		`CREATE TABLE IF NOT EXISTS peers (peer_id TEXT PRIMARY KEY, display_name TEXT NOT NULL, base_url TEXT NOT NULL, status TEXT NOT NULL, capabilities_json TEXT NOT NULL, metadata_json TEXT NOT NULL, registered_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_seen_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_peers_status ON peers(status)`,
+		`CREATE TABLE IF NOT EXISTS peer_targets (peer_id TEXT NOT NULL, target_id TEXT NOT NULL, display_name TEXT NOT NULL, capabilities_json TEXT NOT NULL, defaults_json TEXT NOT NULL, metadata_json TEXT NOT NULL, status TEXT NOT NULL, synced_at TEXT NOT NULL, PRIMARY KEY(peer_id, target_id))`,
+		`CREATE INDEX IF NOT EXISTS idx_peer_targets_target ON peer_targets(target_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
