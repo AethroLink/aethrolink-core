@@ -455,6 +455,7 @@ Rules:
 - `target_agent_id` is resolved on the destination node
 - `intent` and `payload` are required
 - `delivery` is optional; if omitted, the destination applies the same default delivery policy as local task creation
+- origin-side relay creates the proxy task first, then sends `task.submit`; runtime adapters never receive peer transport details
 
 #### task.accepted
 
@@ -826,9 +827,9 @@ Status: `202 Accepted`
 Rules:
 
 - the destination node resolves `target_agent_id` locally and executes through local adapters only
-- the origin node must treat `destination_task_id` as opaque and persist it in a remote binding
+- the origin node treats `destination_task_id` as opaque and persists it in `remote_task_bindings`
 - the destination task records origin metadata (`origin_node_id`, `origin_proxy_task_id`, `origin_thread_id`, and `trace_id`) for auditability
-- Phase 3 transport accepts and executes the remote task, exposes destination events, and forwards resume/cancel controls; durable origin proxy binding remains a later phase
+- Phase 4 origin relay creates a durable operator-facing proxy task, stores the accepted destination binding, and mirrors destination lifecycle events into the origin task log
 
 ### Errors
 
@@ -872,6 +873,7 @@ Rules:
 - `id` equals the destination event `seq`
 - the stream closes after a terminal event
 - frames include destination ownership fields and preserve event source/message/data
+- the origin stores mirrored frames as `transport` events against the local proxy task with origin-assigned sequence numbers
 
 Errors use typed `error` payloads with `message_type_hint: "task.event"`.
 
@@ -1014,6 +1016,64 @@ Required columns:
 - `error_text TEXT`
 - `started_at TEXT NOT NULL`
 - `ended_at TEXT`
+
+## 5.7 Table: peers
+
+Required columns:
+
+- `peer_id TEXT PRIMARY KEY`
+- `display_name TEXT NOT NULL`
+- `base_url TEXT NOT NULL`
+- `status TEXT NOT NULL`
+- `capabilities_json TEXT NOT NULL`
+- `metadata_json TEXT NOT NULL`
+- `registered_at TEXT NOT NULL`
+- `updated_at TEXT NOT NULL`
+- `last_seen_at TEXT NOT NULL`
+
+## 5.8 Table: peer_targets
+
+Required columns:
+
+- `peer_id TEXT NOT NULL`
+- `target_id TEXT NOT NULL`
+- `display_name TEXT NOT NULL`
+- `capabilities_json TEXT NOT NULL`
+- `defaults_json TEXT NOT NULL`
+- `metadata_json TEXT NOT NULL`
+- `status TEXT NOT NULL`
+- `synced_at TEXT NOT NULL`
+
+Constraints:
+
+- primary key `(peer_id, target_id)`
+
+Indexes:
+
+- `(target_id)`
+
+## 5.9 Table: remote_task_bindings
+
+Required columns:
+
+- `local_task_id TEXT PRIMARY KEY`
+- `remote_peer_id TEXT NOT NULL`
+- `destination_node_id TEXT NOT NULL`
+- `destination_task_id TEXT NOT NULL`
+- `destination_thread_id TEXT`
+- `status TEXT NOT NULL`
+- `created_at TEXT NOT NULL`
+- `updated_at TEXT NOT NULL`
+
+Rules:
+
+- `local_task_id` is the origin proxy task id and remains the operator-facing primary id
+- `destination_task_id` is opaque destination-owned execution identity
+- `status` tracks relay/mirroring progress using task status strings such as `dispatching`, `completed`, `failed`, or `cancelled`
+
+Index:
+
+- `(destination_node_id, destination_task_id)`
 
 ## 6. Artifact Contract
 

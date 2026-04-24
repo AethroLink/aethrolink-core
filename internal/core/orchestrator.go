@@ -8,6 +8,8 @@ import (
 	"sync"
 
 	"github.com/aethrolink/aethrolink-core/internal/adapters"
+	"github.com/aethrolink/aethrolink-core/internal/nodeproto"
+	"github.com/aethrolink/aethrolink-core/internal/nodetransport"
 	"github.com/aethrolink/aethrolink-core/internal/runtime"
 	"github.com/aethrolink/aethrolink-core/internal/storage"
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
@@ -34,13 +36,22 @@ type Orchestrator struct {
 	store            *storage.SQLiteStore
 	runtime          *runtime.Manager
 	adapters         *adapters.Registry
+	nodeID           string
 	mu               sync.RWMutex
 	subscribers      map[int]subscriber
 	nextSubscriberID int
 }
 
 func NewOrchestrator(discovery atypes.DiscoveryProvider, store *storage.SQLiteStore, runtimeManager *runtime.Manager, adapterRegistry *adapters.Registry) (*Orchestrator, error) {
-	o := &Orchestrator{discovery: discovery, store: store, runtime: runtimeManager, adapters: adapterRegistry, subscribers: map[int]subscriber{}}
+	return NewOrchestratorWithNodeID(discovery, store, runtimeManager, adapterRegistry, "local")
+}
+
+// NewOrchestratorWithNodeID binds a durable node identity for peer relay metadata.
+func NewOrchestratorWithNodeID(discovery atypes.DiscoveryProvider, store *storage.SQLiteStore, runtimeManager *runtime.Manager, adapterRegistry *adapters.Registry, nodeID string) (*Orchestrator, error) {
+	if nodeID == "" {
+		nodeID = "local"
+	}
+	o := &Orchestrator{discovery: discovery, store: store, runtime: runtimeManager, adapters: adapterRegistry, nodeID: nodeID, subscribers: map[int]subscriber{}}
 	// Restart reconciliation runs once at boot so persisted non-terminal threads
 	// are marked honestly before operators continue them.
 	if err := o.store.MarkInterruptedThreadsOnRestart(context.Background()); err != nil {
@@ -85,6 +96,27 @@ func supportsIntent(spec atypes.RuntimeSpec, intent string) bool {
 // isDispatchableRuntime keeps discovery-only remote targets out of local adapter execution.
 func isDispatchableRuntime(spec atypes.RuntimeSpec) bool {
 	return spec.Owner != atypes.TargetOwnerRemote && spec.Adapter != ""
+}
+
+// resolveRemoteRuntime finds an explicit peer-owned target without using local adapters.
+func (o *Orchestrator) resolveRemoteRuntime(ctx context.Context, targetID string) (atypes.RuntimeSpec, bool, error) {
+	runtimes, err := o.discovery.ListRuntimes(ctx)
+	if err != nil {
+		return atypes.RuntimeSpec{}, false, err
+	}
+	var matches []atypes.RuntimeSpec
+	for _, spec := range runtimes {
+		if spec.TargetID == targetID && spec.Owner == atypes.TargetOwnerRemote {
+			matches = append(matches, spec)
+		}
+	}
+	if len(matches) == 0 {
+		return atypes.RuntimeSpec{}, false, nil
+	}
+	if len(matches) > 1 {
+		return atypes.RuntimeSpec{}, false, ErrRouteAmbiguous
+	}
+	return matches[0], true, nil
 }
 
 func (o *Orchestrator) routeRequest(ctx context.Context, req atypes.TaskCreateRequest) (string, map[string]any, error) {
@@ -187,6 +219,18 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 		req.TargetAgentID = target
 		thread = &loadedThread
 	}
+	if req.TargetAgentID != "" {
+		// Local target IDs win because peer target IDs are not globally unique.
+		if localSpec, err := o.discovery.ResolveRuntime(ctx, req.TargetAgentID); err != nil || !isDispatchableRuntime(localSpec) {
+			remoteSpec, ok, err := o.resolveRemoteRuntime(ctx, req.TargetAgentID)
+			if err != nil {
+				return atypes.TaskRecord{}, err
+			}
+			if ok {
+				return o.createRemoteProxyTask(ctx, req, remoteSpec, thread)
+			}
+		}
+	}
 	resolvedRuntime, runtimeOptions, err := o.routeRequest(ctx, req)
 	if err != nil {
 		return atypes.TaskRecord{}, err
@@ -213,6 +257,73 @@ func (o *Orchestrator) CreateTask(ctx context.Context, req atypes.TaskCreateRequ
 	}
 	go o.runTask(task.TaskID, *req.Delivery, cloneMap(req.Payload))
 	return o.GetTask(ctx, task.TaskID)
+}
+
+// createRemoteProxyTask stores the operator-facing task before relay leaves the node.
+func (o *Orchestrator) createRemoteProxyTask(ctx context.Context, req atypes.TaskCreateRequest, remoteSpec atypes.RuntimeSpec, thread *atypes.ThreadRecord) (atypes.TaskRecord, error) {
+	runtimeOptions := mergeMaps(remoteSpec.Defaults, req.RuntimeOptions)
+	payloadArtifact, err := o.store.StoreJSONArtifact(ctx, req.Payload)
+	if err != nil {
+		return atypes.TaskRecord{}, err
+	}
+	now := atypes.NowUTC()
+	task := atypes.TaskRecord{TaskID: atypes.NewID(), ThreadID: req.ThreadID, ConversationID: req.ConversationID, Sender: req.Sender, Intent: req.Intent, RequestedAgentID: req.TargetAgentID, ResolvedAgentID: remoteSpec.TargetID, RuntimeOptions: cloneMap(runtimeOptions), PayloadArtifactID: payloadArtifact.ArtifactID, Status: atypes.TaskStatusCreated, CreatedAt: now, UpdatedAt: now}
+	if err := o.store.InsertTask(ctx, task); err != nil {
+		return atypes.TaskRecord{}, err
+	}
+	if _, err := o.appendEvent(ctx, task.TaskID, atypes.TaskEventTaskCreated, atypes.TaskStatusCreated, atypes.EventSourceCore, "Task created", map[string]any{}, nil, nil, ""); err != nil {
+		return atypes.TaskRecord{}, err
+	}
+	if _, err := o.appendEvent(ctx, task.TaskID, atypes.TaskEventTaskRouted, atypes.TaskStatusCreated, atypes.EventSourceCore, "Remote route resolved", map[string]any{"resolved_agent_id": remoteSpec.TargetID, "remote_peer_id": remoteSpec.PeerID, "runtime_options": runtimeOptions}, nil, nil, ""); err != nil {
+		return atypes.TaskRecord{}, err
+	}
+	if thread != nil {
+		if err := o.appendTaskToThread(ctx, *thread, task); err != nil {
+			return atypes.TaskRecord{}, err
+		}
+	}
+	go o.relayRemoteTask(task.TaskID, req, remoteSpec, runtimeOptions)
+	return o.GetTask(ctx, task.TaskID)
+}
+
+// relayRemoteTask owns node-to-node delivery while runtime adapters remain local-only.
+func (o *Orchestrator) relayRemoteTask(taskID string, req atypes.TaskCreateRequest, remoteSpec atypes.RuntimeSpec, runtimeOptions map[string]any) {
+	ctx := context.Background()
+	client := nodetransport.NewHTTPClient(remoteSpec.PeerBaseURL, o.nodeID, nil)
+	accepted, err := client.SubmitTask(ctx, nodeproto.TaskSubmitRequest{OriginNodeID: o.nodeID, OriginProxyTaskID: taskID, OriginThreadID: req.ThreadID, TargetAgentID: remoteSpec.TargetID, Intent: req.Intent, Payload: cloneMap(req.Payload), RuntimeOptions: cloneMap(runtimeOptions), Trace: atypes.DefaultTraceContext(), Delivery: req.Delivery, SubmittedAt: atypes.NowUTC()})
+	if err != nil {
+		taskErr := &atypes.TaskError{Reason: "remote relay failed", Detail: err.Error()}
+		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceTransport, taskErr.Reason, map[string]any{"remote_peer_id": remoteSpec.PeerID, "detail": taskErr.Detail}, nil, taskErr, "")
+		return
+	}
+	now := atypes.NowUTC()
+	binding := atypes.RemoteTaskBinding{LocalTaskID: taskID, RemotePeerID: remoteSpec.PeerID, DestinationNodeID: accepted.DestinationNodeID, DestinationTaskID: accepted.DestinationTaskID, DestinationThreadID: accepted.DestinationThreadID, Status: string(atypes.TaskStatusDispatching), CreatedAt: now, UpdatedAt: now}
+	if err := o.store.UpsertRemoteTaskBinding(ctx, binding); err != nil {
+		taskErr := &atypes.TaskError{Reason: "remote binding failed", Detail: err.Error()}
+		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceStorage, taskErr.Reason, map[string]any{"detail": taskErr.Detail}, nil, taskErr, "")
+		return
+	}
+	remote := &atypes.RemoteHandle{TaskID: taskID, TargetID: remoteSpec.TargetID, Binding: accepted.DestinationTaskID}
+	_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskDispatching, atypes.TaskStatusDispatching, atypes.EventSourceTransport, "Remote task accepted", map[string]any{"remote_peer_id": remoteSpec.PeerID, "destination_node_id": accepted.DestinationNodeID, "destination_task_id": accepted.DestinationTaskID}, remote, nil, "")
+	o.mirrorRemoteEvents(ctx, client, taskID, accepted, remoteSpec, remote)
+}
+
+// mirrorRemoteEvents imports destination lifecycle frames into the origin event log.
+func (o *Orchestrator) mirrorRemoteEvents(ctx context.Context, client *nodetransport.HTTPClient, taskID string, accepted nodeproto.TaskAcceptedResponse, remoteSpec atypes.RuntimeSpec, remote *atypes.RemoteHandle) {
+	if err := client.StreamTaskEventsFunc(ctx, accepted.DestinationTaskID, taskID, func(frame nodeproto.TaskEventFrame) error {
+		event := frame.ToLocalTaskEvent(atypes.NewID(), 0)
+		if _, err := o.appendEvent(ctx, taskID, event.Kind, event.State, event.Source, event.Message, event.Data, remote, nil, ""); err != nil {
+			return err
+		}
+		if event.State.IsTerminal() {
+			_ = o.store.UpdateRemoteTaskBindingStatus(ctx, taskID, string(event.State))
+		}
+		return nil
+	}); err != nil {
+		taskErr := &atypes.TaskError{Reason: "remote event stream failed", Detail: err.Error()}
+		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceTransport, taskErr.Reason, map[string]any{"remote_peer_id": remoteSpec.PeerID, "detail": taskErr.Detail}, remote, taskErr, "")
+		return
+	}
 }
 
 // rehydrateRemoteHandle asks the adapter to rebuild any adapter-private

@@ -43,6 +43,18 @@ type PeerTargetRecord struct {
 	SyncedAt     time.Time        `json:"synced_at"`
 }
 
+// RemoteTaskBinding records how an origin proxy task maps to destination execution.
+type RemoteTaskBinding struct {
+	LocalTaskID         string    `json:"local_task_id"`
+	RemotePeerID        string    `json:"remote_peer_id"`
+	DestinationNodeID   string    `json:"destination_node_id"`
+	DestinationTaskID   string    `json:"destination_task_id"`
+	DestinationThreadID string    `json:"destination_thread_id,omitempty"`
+	Status              string    `json:"status"`
+	CreatedAt           time.Time `json:"created_at"`
+	UpdatedAt           time.Time `json:"updated_at"`
+}
+
 // TargetOwner marks whether discovery resolved a local runtime or peer-owned target.
 type TargetOwner string
 

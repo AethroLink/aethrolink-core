@@ -103,6 +103,8 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_peers_status ON peers(status)`,
 		`CREATE TABLE IF NOT EXISTS peer_targets (peer_id TEXT NOT NULL, target_id TEXT NOT NULL, display_name TEXT NOT NULL, capabilities_json TEXT NOT NULL, defaults_json TEXT NOT NULL, metadata_json TEXT NOT NULL, status TEXT NOT NULL, synced_at TEXT NOT NULL, PRIMARY KEY(peer_id, target_id))`,
 		`CREATE INDEX IF NOT EXISTS idx_peer_targets_target ON peer_targets(target_id)`,
+		`CREATE TABLE IF NOT EXISTS remote_task_bindings (local_task_id TEXT PRIMARY KEY, remote_peer_id TEXT NOT NULL, destination_node_id TEXT NOT NULL, destination_task_id TEXT NOT NULL, destination_thread_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+		`CREATE INDEX IF NOT EXISTS idx_remote_task_bindings_destination ON remote_task_bindings(destination_node_id, destination_task_id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := s.db.ExecContext(ctx, stmt); err != nil {
