@@ -127,6 +127,43 @@ func (s *SQLiteStore) ListPeerTargets(ctx context.Context) ([]atypes.PeerTargetR
 	return targets, nil
 }
 
+// UpsertRemoteTaskBinding persists the origin-to-destination execution mapping.
+func (s *SQLiteStore) UpsertRemoteTaskBinding(ctx context.Context, binding atypes.RemoteTaskBinding) error {
+	_, err := s.db.ExecContext(ctx, `
+		INSERT INTO remote_task_bindings(local_task_id, remote_peer_id, destination_node_id, destination_task_id, destination_thread_id, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(local_task_id) DO UPDATE SET
+			remote_peer_id = excluded.remote_peer_id,
+			destination_node_id = excluded.destination_node_id,
+			destination_task_id = excluded.destination_task_id,
+			destination_thread_id = excluded.destination_thread_id,
+			status = excluded.status,
+			updated_at = excluded.updated_at
+	`, binding.LocalTaskID, binding.RemotePeerID, binding.DestinationNodeID, binding.DestinationTaskID, nullString(binding.DestinationThreadID), binding.Status, binding.CreatedAt.Format(time.RFC3339Nano), binding.UpdatedAt.Format(time.RFC3339Nano))
+	if err != nil {
+		return fmt.Errorf("upsert remote task binding: %w", err)
+	}
+	return nil
+}
+
+// GetRemoteTaskBinding returns the destination execution identity for a local proxy task.
+func (s *SQLiteStore) GetRemoteTaskBinding(ctx context.Context, localTaskID string) (atypes.RemoteTaskBinding, error) {
+	row := s.db.QueryRowContext(ctx, `
+		SELECT local_task_id, remote_peer_id, destination_node_id, destination_task_id, COALESCE(destination_thread_id, ''), status, created_at, updated_at
+		FROM remote_task_bindings WHERE local_task_id = ?
+	`, localTaskID)
+	return scanRemoteTaskBinding(row)
+}
+
+// UpdateRemoteTaskBindingStatus records relay progress without changing task ownership ids.
+func (s *SQLiteStore) UpdateRemoteTaskBindingStatus(ctx context.Context, localTaskID string, status string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE remote_task_bindings SET status = ?, updated_at = ? WHERE local_task_id = ?`, status, atypes.NowUTC().Format(time.RFC3339Nano), localTaskID)
+	if err != nil {
+		return fmt.Errorf("update remote task binding status: %w", err)
+	}
+	return nil
+}
+
 // scanPeer hydrates peer rows while preserving JSON extension fields.
 func scanPeer(scanner interface{ Scan(dest ...any) error }) (atypes.PeerRecord, error) {
 	var peer atypes.PeerRecord
@@ -177,4 +214,21 @@ func scanPeerTarget(scanner interface{ Scan(dest ...any) error }) (atypes.PeerTa
 	}
 	target.SyncedAt = parsed
 	return target, nil
+}
+
+// scanRemoteTaskBinding hydrates one durable proxy-to-destination mapping row.
+func scanRemoteTaskBinding(scanner interface{ Scan(dest ...any) error }) (atypes.RemoteTaskBinding, error) {
+	var binding atypes.RemoteTaskBinding
+	var createdAt, updatedAt string
+	if err := scanner.Scan(&binding.LocalTaskID, &binding.RemotePeerID, &binding.DestinationNodeID, &binding.DestinationTaskID, &binding.DestinationThreadID, &binding.Status, &createdAt, &updatedAt); err != nil {
+		return atypes.RemoteTaskBinding{}, err
+	}
+	var err error
+	if binding.CreatedAt, err = time.Parse(time.RFC3339Nano, createdAt); err != nil {
+		return atypes.RemoteTaskBinding{}, fmt.Errorf("parse remote binding created_at: %w", err)
+	}
+	if binding.UpdatedAt, err = time.Parse(time.RFC3339Nano, updatedAt); err != nil {
+		return atypes.RemoteTaskBinding{}, fmt.Errorf("parse remote binding updated_at: %w", err)
+	}
+	return binding, nil
 }
