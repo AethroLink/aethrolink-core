@@ -49,6 +49,20 @@ func (o *Orchestrator) getThreadRecord(ctx context.Context, threadID string) (at
 	return thread, nil
 }
 
+// resolveThreadParticipant accepts local agents and cached peer targets as thread endpoints.
+func (o *Orchestrator) resolveThreadParticipant(ctx context.Context, agentID string) error {
+	runtimes, err := o.discovery.ListRuntimes(ctx)
+	if err != nil {
+		return err
+	}
+	for _, runtime := range runtimes {
+		if runtime.TargetID == agentID {
+			return nil
+		}
+	}
+	return ErrTargetAgentNotFound
+}
+
 // deriveThreadContinuationPair fills omitted sender/target values from persisted
 // thread history so manual continuation can alternate cleanly by default.
 func deriveThreadContinuationPair(thread atypes.ThreadRecord, sender, target string) (string, string, error) {
@@ -166,11 +180,11 @@ func (o *Orchestrator) CreateThread(ctx context.Context, req atypes.ThreadCreate
 	if req.AgentAID == "" || req.AgentBID == "" || req.AgentAID == req.AgentBID {
 		return atypes.ThreadRecord{}, ErrThreadAgentPairInvalid
 	}
-	if _, err := o.discovery.ResolveRuntime(ctx, req.AgentAID); err != nil {
-		return atypes.ThreadRecord{}, ErrTargetAgentNotFound
+	if err := o.resolveThreadParticipant(ctx, req.AgentAID); err != nil {
+		return atypes.ThreadRecord{}, err
 	}
-	if _, err := o.discovery.ResolveRuntime(ctx, req.AgentBID); err != nil {
-		return atypes.ThreadRecord{}, ErrTargetAgentNotFound
+	if err := o.resolveThreadParticipant(ctx, req.AgentBID); err != nil {
+		return atypes.ThreadRecord{}, err
 	}
 	now := atypes.NowUTC()
 	thread := atypes.ThreadRecord{
@@ -255,6 +269,28 @@ func (o *Orchestrator) predictThreadSessionReuse(ctx context.Context, thread aty
 	return willReuse
 }
 
+// inspectThreadParticipants annotates each thread participant with node ownership.
+func (o *Orchestrator) inspectThreadParticipants(ctx context.Context, thread atypes.ThreadRecord, turns []atypes.ThreadTurn) []atypes.ThreadParticipantOwnership {
+	runtimes, _ := o.discovery.ListRuntimes(ctx)
+	participants := make([]atypes.ThreadParticipantOwnership, 0, 2)
+	for _, agentID := range []string{thread.AgentAID, thread.AgentBID} {
+		participant := atypes.ThreadParticipantOwnership{AgentID: agentID, Owner: atypes.TargetOwnerLocal, NodeID: o.nodeID}
+		for _, turn := range turns {
+			if turn.TargetAgentID == agentID && turn.TargetOwner == atypes.TargetOwnerRemote {
+				participant = atypes.ThreadParticipantOwnership{AgentID: agentID, Owner: atypes.TargetOwnerRemote, PeerID: turn.RemotePeerID, NodeID: turn.DestinationNodeID}
+			}
+		}
+		for _, spec := range runtimes {
+			if spec.TargetID == agentID && spec.Owner == atypes.TargetOwnerRemote && participant.Owner != atypes.TargetOwnerRemote {
+				participant = atypes.ThreadParticipantOwnership{AgentID: agentID, Owner: atypes.TargetOwnerRemote, PeerID: spec.PeerID, NodeID: spec.PeerID}
+				break
+			}
+		}
+		participants = append(participants, participant)
+	}
+	return participants
+}
+
 // InspectThread bundles persisted turns and continuity state for operator debugging.
 func (o *Orchestrator) InspectThread(ctx context.Context, threadID string) (atypes.ThreadInspection, error) {
 	thread, err := o.getThreadRecord(ctx, threadID)
@@ -303,6 +339,7 @@ func (o *Orchestrator) InspectThread(ctx context.Context, threadID string) (atyp
 	return atypes.ThreadInspection{
 		Thread:             thread,
 		Turns:              turns,
+		Participants:       o.inspectThreadParticipants(ctx, thread, turns),
 		Continuity:         continuity,
 		NextContinue:       nextContinue,
 		InterruptionReason: deriveThreadInterruptionReason(thread, lastTask),

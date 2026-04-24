@@ -130,6 +130,55 @@ func TestCreateTaskPrefersLocalTargetWhenPeerTargetIDCollides(t *testing.T) {
 	}
 }
 
+func TestContinueThreadRoutesRemoteParticipantAndInspectsBinding(t *testing.T) {
+	ctx := context.Background()
+	destinationServer, destinationOrchestrator, destinationStore := setupRelayDestination(t, "node-b")
+	defer destinationServer.Close()
+	defer destinationStore.Close()
+	defer destinationOrchestrator.StopAllRuntimeProcesses(ctx)
+
+	originStore, originOrchestrator := setupRelayOrigin(t, "node-a", destinationServer.URL)
+	defer originStore.Close()
+	defer originOrchestrator.StopAllRuntimeProcesses(ctx)
+	root := filepath.Clean(filepath.Join("..", ".."))
+	registerLocalReviewAgent(t, agents.NewService(originStore), root)
+
+	thread, err := originOrchestrator.CreateThread(ctx, atypes.ThreadCreateRequest{AgentAID: "local-reviewer", AgentBID: "remote-coder"})
+	if err != nil {
+		t.Fatalf("create thread: %v", err)
+	}
+	task, err := originOrchestrator.ContinueThread(ctx, thread.ThreadID, atypes.ThreadContinueRequest{Sender: "local-reviewer", TargetAgentID: "remote-coder", Intent: "code.patch", Payload: map[string]any{"mode": "success"}})
+	if err != nil {
+		t.Fatalf("continue thread to remote participant: %v", err)
+	}
+	_ = waitForOriginStatus(t, originOrchestrator, task.TaskID, atypes.TaskStatusCompleted)
+
+	inspection, err := originOrchestrator.InspectThread(ctx, thread.ThreadID)
+	if err != nil {
+		t.Fatalf("inspect thread: %v", err)
+	}
+	if len(inspection.Turns) != 1 {
+		t.Fatalf("expected one thread turn, got %+v", inspection.Turns)
+	}
+	turn := inspection.Turns[0]
+	if turn.TargetOwner != atypes.TargetOwnerRemote || turn.RemotePeerID != "peer-b" || turn.DestinationNodeID != "node-b" || turn.DestinationTaskID == "" {
+		t.Fatalf("remote turn binding not inspectable: %+v", turn)
+	}
+	if len(inspection.Participants) != 2 {
+		t.Fatalf("expected participant ownership for both sides, got %+v", inspection.Participants)
+	}
+	participants := map[string]atypes.ThreadParticipantOwnership{}
+	for _, participant := range inspection.Participants {
+		participants[participant.AgentID] = participant
+	}
+	if participants["local-reviewer"].Owner != atypes.TargetOwnerLocal || participants["local-reviewer"].NodeID != "node-a" {
+		t.Fatalf("local participant ownership not inspectable: %+v", participants["local-reviewer"])
+	}
+	if participants["remote-coder"].Owner != atypes.TargetOwnerRemote || participants["remote-coder"].PeerID != "peer-b" || participants["remote-coder"].NodeID != "node-b" {
+		t.Fatalf("remote participant ownership not inspectable: %+v", participants["remote-coder"])
+	}
+}
+
 func TestCreateTaskMirrorsRemoteEventsBeforeRemoteStreamCloses(t *testing.T) {
 	ctx := context.Background()
 	emit := make(chan struct{})
@@ -268,6 +317,15 @@ func registerRelayAgent(t *testing.T, service *agents.Service, root string) {
 	_, err := service.Register(context.Background(), atypes.AgentRegistrationRequest{AgentID: "remote-coder", DisplayName: "remote coder", TransportKind: "local_managed", Adapter: "mock_hermes", Launch: atypes.LaunchSpec{Mode: atypes.LaunchModeManaged, Commands: map[string][]string{"coder": {"go", "run", root + "/cmd/fake-acp-client-agent"}}}, Defaults: map[string]any{"executor": "coder"}, Capabilities: []string{"code.patch"}})
 	if err != nil {
 		t.Fatalf("register destination agent: %v", err)
+	}
+}
+
+// registerLocalReviewAgent gives thread validation a local participant without changing relay target setup.
+func registerLocalReviewAgent(t *testing.T, service *agents.Service, root string) {
+	t.Helper()
+	_, err := service.Register(context.Background(), atypes.AgentRegistrationRequest{AgentID: "local-reviewer", DisplayName: "local reviewer", TransportKind: "local_managed", Adapter: "mock_hermes", Launch: atypes.LaunchSpec{Mode: atypes.LaunchModeManaged, Commands: map[string][]string{"reviewer": {"go", "run", root + "/cmd/fake-acp-client-agent"}}}, Defaults: map[string]any{"executor": "reviewer"}, Capabilities: []string{"code.patch"}})
+	if err != nil {
+		t.Fatalf("register local review agent: %v", err)
 	}
 }
 

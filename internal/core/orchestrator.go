@@ -303,6 +303,12 @@ func (o *Orchestrator) relayRemoteTask(taskID string, req atypes.TaskCreateReque
 		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceStorage, taskErr.Reason, map[string]any{"detail": taskErr.Detail}, nil, taskErr, "")
 		return
 	}
+	// Keep the thread turn inspectable after the destination returns its durable task binding.
+	if err := o.store.UpdateThreadTurnRemoteBindingByTaskID(ctx, taskID, binding); err != nil {
+		taskErr := &atypes.TaskError{Reason: "remote thread binding failed", Detail: err.Error()}
+		_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskFailed, atypes.TaskStatusFailed, atypes.EventSourceStorage, taskErr.Reason, map[string]any{"detail": taskErr.Detail}, nil, taskErr, "")
+		return
+	}
 	remote := &atypes.RemoteHandle{TaskID: taskID, TargetID: remoteSpec.TargetID, Binding: accepted.DestinationTaskID}
 	_, _ = o.appendEvent(ctx, taskID, atypes.TaskEventTaskDispatching, atypes.TaskStatusDispatching, atypes.EventSourceTransport, "Remote task accepted", map[string]any{"remote_peer_id": remoteSpec.PeerID, "destination_node_id": accepted.DestinationNodeID, "destination_task_id": accepted.DestinationTaskID}, remote, nil, "")
 	o.mirrorRemoteEvents(ctx, client, taskID, accepted, remoteSpec, remote)

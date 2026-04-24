@@ -31,16 +31,29 @@ type ThreadRecord struct {
 
 // ThreadTurn records one ordered hop inside a durable thread boundary.
 type ThreadTurn struct {
-	ThreadID          string    `json:"thread_id"`
-	TurnIndex         int64     `json:"turn_index"`
-	TaskID            string    `json:"task_id,omitempty"`
-	SenderAgentID     string    `json:"sender_agent_id"`
-	TargetAgentID     string    `json:"target_agent_id"`
-	RemoteSessionID   string    `json:"remote_session_id,omitempty"`
-	RemoteExecutionID string    `json:"remote_execution_id,omitempty"`
-	Status            string    `json:"status"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ThreadID            string      `json:"thread_id"`
+	TurnIndex           int64       `json:"turn_index"`
+	TaskID              string      `json:"task_id,omitempty"`
+	SenderAgentID       string      `json:"sender_agent_id"`
+	TargetAgentID       string      `json:"target_agent_id"`
+	TargetOwner         TargetOwner `json:"target_owner,omitempty"`
+	RemotePeerID        string      `json:"remote_peer_id,omitempty"`
+	DestinationNodeID   string      `json:"destination_node_id,omitempty"`
+	DestinationTaskID   string      `json:"destination_task_id,omitempty"`
+	DestinationThreadID string      `json:"destination_thread_id,omitempty"`
+	RemoteSessionID     string      `json:"remote_session_id,omitempty"`
+	RemoteExecutionID   string      `json:"remote_execution_id,omitempty"`
+	Status              string      `json:"status"`
+	CreatedAt           time.Time   `json:"created_at"`
+	UpdatedAt           time.Time   `json:"updated_at"`
+}
+
+// ThreadParticipantOwnership makes local-vs-peer ownership explicit in inspect output.
+type ThreadParticipantOwnership struct {
+	AgentID string      `json:"agent_id"`
+	Owner   TargetOwner `json:"owner"`
+	PeerID  string      `json:"peer_id,omitempty"`
+	NodeID  string      `json:"node_id,omitempty"`
 }
 
 // ThreadContinuitySide shows one agent's current reusable continuity state.
@@ -60,11 +73,12 @@ type ThreadNextContinue struct {
 
 // ThreadInspection bundles the operator-facing continuity view for one thread.
 type ThreadInspection struct {
-	Thread             ThreadRecord           `json:"thread"`
-	Turns              []ThreadTurn           `json:"turns"`
-	Continuity         []ThreadContinuitySide `json:"continuity"`
-	NextContinue       ThreadNextContinue     `json:"next_continue"`
-	InterruptionReason string                 `json:"interruption_reason,omitempty"`
+	Thread             ThreadRecord                 `json:"thread"`
+	Turns              []ThreadTurn                 `json:"turns"`
+	Participants       []ThreadParticipantOwnership `json:"participants"`
+	Continuity         []ThreadContinuitySide       `json:"continuity"`
+	NextContinue       ThreadNextContinue           `json:"next_continue"`
+	InterruptionReason string                       `json:"interruption_reason,omitempty"`
 }
 
 // ThreadCreateRequest creates a durable two-agent thread boundary.

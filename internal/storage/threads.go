@@ -41,9 +41,9 @@ func (s *SQLiteStore) MarkInterruptedThreadsOnRestart(ctx context.Context) error
 // AppendThreadTurn adds one ordered turn record to a persisted thread history.
 func (s *SQLiteStore) AppendThreadTurn(ctx context.Context, turn atypes.ThreadTurn) error {
 	_, err := s.db.ExecContext(ctx, `
-		INSERT INTO thread_turns(thread_id, turn_index, task_id, sender_agent_id, target_agent_id, remote_session_id, remote_execution_id, status, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, turn.ThreadID, turn.TurnIndex, nullString(turn.TaskID), turn.SenderAgentID, turn.TargetAgentID, nullString(turn.RemoteSessionID), nullString(turn.RemoteExecutionID), turn.Status, turn.CreatedAt.Format(time.RFC3339Nano), turn.UpdatedAt.Format(time.RFC3339Nano))
+		INSERT INTO thread_turns(thread_id, turn_index, task_id, sender_agent_id, target_agent_id, target_owner, remote_peer_id, destination_node_id, destination_task_id, destination_thread_id, remote_session_id, remote_execution_id, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, turn.ThreadID, turn.TurnIndex, nullString(turn.TaskID), turn.SenderAgentID, turn.TargetAgentID, nullString(string(turn.TargetOwner)), nullString(turn.RemotePeerID), nullString(turn.DestinationNodeID), nullString(turn.DestinationTaskID), nullString(turn.DestinationThreadID), nullString(turn.RemoteSessionID), nullString(turn.RemoteExecutionID), turn.Status, turn.CreatedAt.Format(time.RFC3339Nano), turn.UpdatedAt.Format(time.RFC3339Nano))
 	if err != nil {
 		return fmt.Errorf("append thread turn: %w", err)
 	}
@@ -53,7 +53,7 @@ func (s *SQLiteStore) AppendThreadTurn(ctx context.Context, turn atypes.ThreadTu
 // ListThreadTurns returns the persisted turn log in conversation order.
 func (s *SQLiteStore) ListThreadTurns(ctx context.Context, threadID string) ([]atypes.ThreadTurn, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		SELECT thread_id, turn_index, task_id, sender_agent_id, target_agent_id, remote_session_id, remote_execution_id, status, created_at, updated_at
+		SELECT thread_id, turn_index, task_id, sender_agent_id, target_agent_id, target_owner, remote_peer_id, destination_node_id, destination_task_id, destination_thread_id, remote_session_id, remote_execution_id, status, created_at, updated_at
 		FROM thread_turns WHERE thread_id = ? ORDER BY turn_index ASC
 	`, threadID)
 	if err != nil {
@@ -102,15 +102,33 @@ func (s *SQLiteStore) AppendThreadTurnAndUpdateThread(ctx context.Context, threa
 		return fmt.Errorf("select next thread turn index: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO thread_turns(thread_id, turn_index, task_id, sender_agent_id, target_agent_id, remote_session_id, remote_execution_id, status, created_at, updated_at)
-		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-	`, turn.ThreadID, nextTurnIndex, nullString(turn.TaskID), turn.SenderAgentID, turn.TargetAgentID, nullString(turn.RemoteSessionID), nullString(turn.RemoteExecutionID), turn.Status, turn.CreatedAt.Format(time.RFC3339Nano), turn.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
+		INSERT INTO thread_turns(thread_id, turn_index, task_id, sender_agent_id, target_agent_id, target_owner, remote_peer_id, destination_node_id, destination_task_id, destination_thread_id, remote_session_id, remote_execution_id, status, created_at, updated_at)
+		VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, turn.ThreadID, nextTurnIndex, nullString(turn.TaskID), turn.SenderAgentID, turn.TargetAgentID, nullString(string(turn.TargetOwner)), nullString(turn.RemotePeerID), nullString(turn.DestinationNodeID), nullString(turn.DestinationTaskID), nullString(turn.DestinationThreadID), nullString(turn.RemoteSessionID), nullString(turn.RemoteExecutionID), turn.Status, turn.CreatedAt.Format(time.RFC3339Nano), turn.UpdatedAt.Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("append thread turn: %w", err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit thread mutation tx: %w", err)
 	}
 	committed = true
+	return nil
+}
+
+// UpdateThreadTurnRemoteBindingByTaskID persists the origin-turn to destination-task binding.
+func (s *SQLiteStore) UpdateThreadTurnRemoteBindingByTaskID(ctx context.Context, taskID string, binding atypes.RemoteTaskBinding) error {
+	_, err := s.db.ExecContext(ctx, `
+		UPDATE thread_turns
+		SET target_owner = ?,
+		    remote_peer_id = ?,
+		    destination_node_id = ?,
+		    destination_task_id = ?,
+		    destination_thread_id = ?,
+		    updated_at = ?
+		WHERE task_id = ?
+	`, string(atypes.TargetOwnerRemote), binding.RemotePeerID, binding.DestinationNodeID, binding.DestinationTaskID, nullString(binding.DestinationThreadID), atypes.NowUTC().Format(time.RFC3339Nano), taskID)
+	if err != nil {
+		return fmt.Errorf("update thread turn remote binding: %w", err)
+	}
 	return nil
 }
 
@@ -172,17 +190,27 @@ func scanThread(scanner interface{ Scan(dest ...any) error }) (atypes.ThreadReco
 // scanThreadTurn reconstructs one ordered turn row for thread history queries.
 func scanThreadTurn(scanner interface{ Scan(dest ...any) error }) (atypes.ThreadTurn, error) {
 	var (
-		turn              atypes.ThreadTurn
-		taskID            sql.NullString
-		remoteSessionID   sql.NullString
-		remoteExecutionID sql.NullString
-		createdAt         string
-		updatedAt         string
+		turn                atypes.ThreadTurn
+		taskID              sql.NullString
+		targetOwner         sql.NullString
+		remotePeerID        sql.NullString
+		destinationNodeID   sql.NullString
+		destinationTaskID   sql.NullString
+		destinationThreadID sql.NullString
+		remoteSessionID     sql.NullString
+		remoteExecutionID   sql.NullString
+		createdAt           string
+		updatedAt           string
 	)
-	if err := scanner.Scan(&turn.ThreadID, &turn.TurnIndex, &taskID, &turn.SenderAgentID, &turn.TargetAgentID, &remoteSessionID, &remoteExecutionID, &turn.Status, &createdAt, &updatedAt); err != nil {
+	if err := scanner.Scan(&turn.ThreadID, &turn.TurnIndex, &taskID, &turn.SenderAgentID, &turn.TargetAgentID, &targetOwner, &remotePeerID, &destinationNodeID, &destinationTaskID, &destinationThreadID, &remoteSessionID, &remoteExecutionID, &turn.Status, &createdAt, &updatedAt); err != nil {
 		return atypes.ThreadTurn{}, err
 	}
 	turn.TaskID = taskID.String
+	turn.TargetOwner = atypes.TargetOwner(targetOwner.String)
+	turn.RemotePeerID = remotePeerID.String
+	turn.DestinationNodeID = destinationNodeID.String
+	turn.DestinationTaskID = destinationTaskID.String
+	turn.DestinationThreadID = destinationThreadID.String
 	turn.RemoteSessionID = remoteSessionID.String
 	turn.RemoteExecutionID = remoteExecutionID.String
 	var err error

@@ -91,7 +91,7 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 		`CREATE INDEX IF NOT EXISTS idx_tasks_agent_status ON tasks(resolved_agent_id, status)`,
 		`CREATE TABLE IF NOT EXISTS threads (thread_id TEXT PRIMARY KEY, agent_a_id TEXT NOT NULL, agent_b_id TEXT NOT NULL, status TEXT NOT NULL, continuity_key TEXT NOT NULL, last_task_id TEXT, last_actor_agent_id TEXT, last_target_agent_id TEXT, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 		`CREATE INDEX IF NOT EXISTS idx_threads_agents_status ON threads(agent_a_id, agent_b_id, status)`,
-		`CREATE TABLE IF NOT EXISTS thread_turns (thread_id TEXT NOT NULL, turn_index INTEGER NOT NULL, task_id TEXT, sender_agent_id TEXT NOT NULL, target_agent_id TEXT NOT NULL, remote_session_id TEXT, remote_execution_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(thread_id, turn_index))`,
+		`CREATE TABLE IF NOT EXISTS thread_turns (thread_id TEXT NOT NULL, turn_index INTEGER NOT NULL, task_id TEXT, sender_agent_id TEXT NOT NULL, target_agent_id TEXT NOT NULL, target_owner TEXT, remote_peer_id TEXT, destination_node_id TEXT, destination_task_id TEXT, destination_thread_id TEXT, remote_session_id TEXT, remote_execution_id TEXT, status TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, PRIMARY KEY(thread_id, turn_index))`,
 		`CREATE INDEX IF NOT EXISTS idx_thread_turns_thread_order ON thread_turns(thread_id, turn_index)`,
 		`CREATE TABLE IF NOT EXISTS session_bindings (target_id TEXT NOT NULL, subcontext_key TEXT NOT NULL, sticky_key TEXT NOT NULL, adapter TEXT NOT NULL, remote_session_id TEXT NOT NULL, metadata_json TEXT NOT NULL, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, last_used_at TEXT NOT NULL, last_activity_at TEXT NOT NULL, PRIMARY KEY(target_id, subcontext_key, sticky_key))`,
 		`CREATE INDEX IF NOT EXISTS idx_session_bindings_target_subcontext ON session_bindings(target_id, subcontext_key)`,
@@ -120,6 +120,20 @@ func (s *SQLiteStore) migrate(ctx context.Context) error {
 	// so pre-thread databases can still migrate in place.
 	if _, err := s.db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS idx_tasks_thread ON tasks(thread_id)`); err != nil {
 		return fmt.Errorf("migrate sqlite create idx_tasks_thread: %w", err)
+	}
+	// Thread turn binding columns are additive because Phase 5 enriches existing
+	// turn logs without changing their ordered primary key.
+	threadTurnColumns := map[string]string{
+		"target_owner":          `ALTER TABLE thread_turns ADD COLUMN target_owner TEXT`,
+		"remote_peer_id":        `ALTER TABLE thread_turns ADD COLUMN remote_peer_id TEXT`,
+		"destination_node_id":   `ALTER TABLE thread_turns ADD COLUMN destination_node_id TEXT`,
+		"destination_task_id":   `ALTER TABLE thread_turns ADD COLUMN destination_task_id TEXT`,
+		"destination_thread_id": `ALTER TABLE thread_turns ADD COLUMN destination_thread_id TEXT`,
+	}
+	for column, stmt := range threadTurnColumns {
+		if _, err := s.db.ExecContext(ctx, stmt); err != nil && !strings.Contains(err.Error(), "duplicate column name") {
+			return fmt.Errorf("migrate sqlite add thread_turns.%s: %w", column, err)
+		}
 	}
 	return nil
 }

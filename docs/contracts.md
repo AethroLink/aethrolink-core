@@ -830,6 +830,7 @@ Rules:
 - the origin node treats `destination_task_id` as opaque and persists it in `remote_task_bindings`
 - the destination task records origin metadata (`origin_node_id`, `origin_proxy_task_id`, `origin_thread_id`, and `trace_id`) for auditability
 - Phase 4 origin relay creates a durable operator-facing proxy task, stores the accepted destination binding, and mirrors destination lifecycle events into the origin task log
+- Phase 5 thread continuation stores the same destination binding on the origin `thread_turns` row so thread inspection can explain which node owns each remote turn
 
 ### Errors
 
@@ -877,7 +878,38 @@ Rules:
 
 Errors use typed `error` payloads with `message_type_hint: "task.event"`.
 
-## 4.13 POST /v1/node/tasks/{task_id}/resume
+## 4.13 Thread continuation across static peers
+
+The origin thread remains the operator-facing continuity record even when one participant is peer-owned. `ContinueThread` still routes through normal task creation: local participants dispatch locally, while remote participants create an origin proxy task and submit `task.submit` to the destination node.
+
+Origin `thread_turns` rows persist both the local proxy task and, when the target is remote, the destination binding:
+
+```json
+{
+  "thread_id": "thread-origin-1",
+  "turn_index": 2,
+  "task_id": "origin-proxy-task-2",
+  "sender_agent_id": "local-reviewer",
+  "target_agent_id": "remote-coder",
+  "target_owner": "remote",
+  "remote_peer_id": "peer-b",
+  "destination_node_id": "node-b",
+  "destination_task_id": "remote-task-9",
+  "destination_thread_id": "thread-remote-2",
+  "status": "completed"
+}
+```
+
+Inspection rules:
+
+- thread participants report ownership with `owner`, `node_id`, and `peer_id` when remote
+- local participants use the origin node id
+- remote participant ownership is derived from the turn binding when available, otherwise from cached peer target discovery
+- destination task/thread ids stay opaque and are used only for audit, event mirroring, and recovery
+- bounded auto-handoff remains origin-orchestrator owned; `max_turns` limits cross-node continuation the same way it limits local continuation
+- remote session reuse prediction is best-effort and must not be treated as a distributed scheduling guarantee
+
+## 4.14 POST /v1/node/tasks/{task_id}/resume
 
 Apply a peer `task.resume` control message to a destination-owned task.
 
@@ -895,7 +927,7 @@ Status: `202 Accepted`
 
 Errors use typed `error` payloads with `message_type_hint: "task.resume"`.
 
-## 4.14 POST /v1/node/tasks/{task_id}/cancel
+## 4.15 POST /v1/node/tasks/{task_id}/cancel
 
 Apply a peer `task.cancel` control message to a destination-owned task.
 
