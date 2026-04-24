@@ -326,6 +326,51 @@ func TestSQLiteStorePersistsThreadsAndTurnsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestSQLiteStorePersistsRemoteThreadTurnBinding(t *testing.T) {
+	tmp := t.TempDir()
+	store, err := Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1:7777")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := time.Now().UTC()
+	thread := atypes.ThreadRecord{ThreadID: atypes.NewID(), AgentAID: "local-reviewer", AgentBID: "remote-coder", Status: atypes.ThreadStatusActive, CreatedAt: now, UpdatedAt: now}
+	if err := store.InsertThread(ctx, thread); err != nil {
+		t.Fatalf("insert thread: %v", err)
+	}
+	turn := atypes.ThreadTurn{
+		ThreadID:            thread.ThreadID,
+		TaskID:              "origin-task-1",
+		SenderAgentID:       "local-reviewer",
+		TargetAgentID:       "remote-coder",
+		TargetOwner:         atypes.TargetOwnerRemote,
+		RemotePeerID:        "peer-b",
+		DestinationNodeID:   "node-b",
+		DestinationTaskID:   "destination-task-1",
+		DestinationThreadID: "destination-thread-1",
+		Status:              string(atypes.TaskStatusDispatching),
+		CreatedAt:           now,
+		UpdatedAt:           now,
+	}
+	if err := store.AppendThreadTurn(ctx, turn); err != nil {
+		t.Fatalf("append remote turn: %v", err)
+	}
+
+	turns, err := store.ListThreadTurns(ctx, thread.ThreadID)
+	if err != nil {
+		t.Fatalf("list turns: %v", err)
+	}
+	if len(turns) != 1 {
+		t.Fatalf("expected one turn, got %d", len(turns))
+	}
+	loaded := turns[0]
+	if loaded.TargetOwner != atypes.TargetOwnerRemote || loaded.RemotePeerID != "peer-b" || loaded.DestinationNodeID != "node-b" || loaded.DestinationTaskID != "destination-task-1" || loaded.DestinationThreadID != "destination-thread-1" {
+		t.Fatalf("remote turn binding did not persist: %+v", loaded)
+	}
+}
+
 func TestSQLiteStoreAssignsNextThreadTurnIndexInsideMutationTransaction(t *testing.T) {
 	tmp := t.TempDir()
 	store, err := Open(filepath.Join(tmp, "aethrolink.db"), filepath.Join(tmp, "artifacts"), "http://127.0.0.1:7777")
