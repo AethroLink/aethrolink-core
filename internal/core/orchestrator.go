@@ -82,6 +82,11 @@ func supportsIntent(spec atypes.RuntimeSpec, intent string) bool {
 	return false
 }
 
+// isDispatchableRuntime keeps discovery-only remote targets out of local adapter execution.
+func isDispatchableRuntime(spec atypes.RuntimeSpec) bool {
+	return spec.Owner != atypes.TargetOwnerRemote && spec.Adapter != ""
+}
+
 func (o *Orchestrator) routeRequest(ctx context.Context, req atypes.TaskCreateRequest) (string, map[string]any, error) {
 	if err := atypes.ValidateIntent(req.Intent); err != nil {
 		return "", nil, err
@@ -89,6 +94,9 @@ func (o *Orchestrator) routeRequest(ctx context.Context, req atypes.TaskCreateRe
 	if req.TargetAgentID != "" {
 		spec, err := o.discovery.ResolveRuntime(ctx, req.TargetAgentID)
 		if err != nil {
+			return "", nil, ErrTargetAgentNotFound
+		}
+		if !isDispatchableRuntime(spec) {
 			return "", nil, ErrTargetAgentNotFound
 		}
 		if !supportsIntent(spec, req.Intent) {
@@ -102,7 +110,7 @@ func (o *Orchestrator) routeRequest(ctx context.Context, req atypes.TaskCreateRe
 	}
 	var matches []atypes.RuntimeSpec
 	for _, runtimeSpec := range runtimes {
-		if supportsIntent(runtimeSpec, req.Intent) {
+		if isDispatchableRuntime(runtimeSpec) && supportsIntent(runtimeSpec, req.Intent) {
 			matches = append(matches, runtimeSpec)
 		}
 	}

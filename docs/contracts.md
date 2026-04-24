@@ -412,6 +412,8 @@ Rules:
 - peer targets are cached exported targets from the owning peer
 - target existence is independent of current peer liveness
 - discovery exposes remote targets as `RuntimeSpec` with `owner=remote`, `peer_id`, `peer_base_url`, and `peer_status`
+- remote targets are discovery-only until the node relay transport is wired; local task routing must not dispatch them through runtime adapters
+- duplicate `target_id` values across peers are valid storage records, but explicit runtime lookup must reject them as ambiguous
 
 ### 3.11 Node Protocol Payloads
 

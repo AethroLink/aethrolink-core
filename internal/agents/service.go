@@ -11,7 +11,11 @@ import (
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
 
-var ErrAgentNotFound = errors.New("agent not found")
+var (
+	ErrAgentNotFound               = errors.New("agent not found")
+	ErrRemoteTargetAmbiguous       = errors.New("ambiguous remote target")
+	ErrRemoteTargetNotDispatchable = errors.New("remote target is not dispatchable")
+)
 
 type Service struct {
 	store *storage.SQLiteStore
@@ -115,10 +119,17 @@ func (s *Service) ResolveRuntime(ctx context.Context, targetID string) (atypes.R
 	if err != nil {
 		return atypes.RuntimeSpec{}, err
 	}
+	matches := make([]atypes.RuntimeSpec, 0, 1)
 	for _, runtime := range remoteTargets {
 		if runtime.TargetID == targetID {
-			return runtime, nil
+			matches = append(matches, runtime)
 		}
+	}
+	if len(matches) > 1 {
+		return atypes.RuntimeSpec{}, fmt.Errorf("%w: %s", ErrRemoteTargetAmbiguous, targetID)
+	}
+	if len(matches) == 1 {
+		return atypes.RuntimeSpec{}, fmt.Errorf("%w: %s", ErrRemoteTargetNotDispatchable, targetID)
 	}
 	return atypes.RuntimeSpec{}, fmt.Errorf("target not found: %s", targetID)
 }
