@@ -147,13 +147,12 @@ func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
 	flusher.Flush()
 	var lastReplaySeq int64
 	terminalReplayed := false
+	var bufferedLive []atypes.TaskEvent
 	for _, event := range history {
 		if event.Seq <= lastReplaySeq {
 			continue
 		}
-		if event.Seq > lastReplaySeq {
-			lastReplaySeq = event.Seq
-		}
+		lastReplaySeq = event.Seq
 		if event.State.IsTerminal() {
 			terminalReplayed = true
 		}
@@ -164,21 +163,25 @@ func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
 			if !ok {
 				return
 			}
-			if liveEvent.Seq <= lastReplaySeq {
-				continue
-			}
-			// Live terminal events must not wait behind a large replay backlog.
-			lastReplaySeq = liveEvent.Seq
-			writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, liveEvent))
-			flusher.Flush()
-			if liveEvent.State.IsTerminal() {
-				return
-			}
+			// Buffer live events during replay so a high sequence cannot hide lower
+			// persisted history frames that the origin has not mirrored yet.
+			bufferedLive = append(bufferedLive, liveEvent)
 		default:
 		}
 	}
 	if terminalReplayed {
 		return
+	}
+	for _, event := range bufferedLive {
+		if event.Seq <= lastReplaySeq {
+			continue
+		}
+		lastReplaySeq = event.Seq
+		writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, event))
+		flusher.Flush()
+		if event.State.IsTerminal() {
+			return
+		}
 	}
 	ctx := r.Context()
 	for {
@@ -192,6 +195,7 @@ func (s *Server) handleNodeTaskEvents(w http.ResponseWriter, r *http.Request) {
 			if event.Seq <= lastReplaySeq {
 				continue
 			}
+			lastReplaySeq = event.Seq
 			writeNodeSSE(w, nodeTaskEventFrame(s.nodeID, originProxyTaskID, task, event))
 			flusher.Flush()
 			if event.State.IsTerminal() {

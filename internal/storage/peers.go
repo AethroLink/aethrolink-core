@@ -169,8 +169,8 @@ func (s *SQLiteStore) MarkInterruptedRemoteRelayBindingsOnRestart(ctx context.Co
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT local_task_id, remote_peer_id, destination_node_id, destination_task_id, COALESCE(destination_thread_id, ''), status, created_at, updated_at
 		FROM remote_task_bindings
-		WHERE status NOT IN (?, ?, ?, ?)
-	`, string(atypes.TaskStatusCompleted), string(atypes.TaskStatusFailed), string(atypes.TaskStatusCancelled), atypes.RemoteRelayStatusInterrupted)
+		WHERE status NOT IN (?, ?, ?)
+	`, string(atypes.TaskStatusCompleted), string(atypes.TaskStatusFailed), string(atypes.TaskStatusCancelled))
 	if err != nil {
 		return nil, fmt.Errorf("list interrupted remote task bindings: %w", err)
 	}
@@ -195,8 +195,8 @@ func (s *SQLiteStore) MarkInterruptedRemoteRelayBindingsOnRestart(ctx context.Co
 	_, err = s.db.ExecContext(ctx, `
 		UPDATE remote_task_bindings
 		SET status = ?, updated_at = ?
-		WHERE status NOT IN (?, ?, ?, ?)
-	`, atypes.RemoteRelayStatusInterrupted, now, string(atypes.TaskStatusCompleted), string(atypes.TaskStatusFailed), string(atypes.TaskStatusCancelled), atypes.RemoteRelayStatusInterrupted)
+		WHERE status NOT IN (?, ?, ?)
+	`, atypes.RemoteRelayStatusInterrupted, now, string(atypes.TaskStatusCompleted), string(atypes.TaskStatusFailed), string(atypes.TaskStatusCancelled))
 	if err != nil {
 		return nil, fmt.Errorf("mark interrupted remote task bindings on restart: %w", err)
 	}

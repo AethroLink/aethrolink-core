@@ -491,6 +491,7 @@ func TestSQLiteStoreMarksRemoteRelayBindingsInterruptedOnRestart(t *testing.T) {
 	bindings := []atypes.RemoteTaskBinding{
 		{LocalTaskID: "task-pending", RemotePeerID: "peer-b", DestinationNodeID: "node-b", DestinationTaskID: "remote-pending", Status: atypes.RemoteRelayStatusPending, CreatedAt: now, UpdatedAt: now},
 		{LocalTaskID: "task-streaming", RemotePeerID: "peer-b", DestinationNodeID: "node-b", DestinationTaskID: "remote-streaming", Status: atypes.RemoteRelayStatusStreaming, CreatedAt: now, UpdatedAt: now},
+		{LocalTaskID: "task-already-interrupted", RemotePeerID: "peer-b", DestinationNodeID: "node-b", DestinationTaskID: "remote-interrupted", Status: atypes.RemoteRelayStatusInterrupted, CreatedAt: now, UpdatedAt: now},
 		{LocalTaskID: "task-completed", RemotePeerID: "peer-b", DestinationNodeID: "node-b", DestinationTaskID: "remote-completed", Status: string(atypes.TaskStatusCompleted), CreatedAt: now, UpdatedAt: now},
 	}
 	for _, binding := range bindings {
@@ -503,10 +504,10 @@ func TestSQLiteStoreMarksRemoteRelayBindingsInterruptedOnRestart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("mark relay bindings interrupted: %v", err)
 	}
-	if len(interrupted) != 2 {
-		t.Fatalf("expected 2 interrupted bindings, got %d", len(interrupted))
+	if len(interrupted) != 3 {
+		t.Fatalf("expected 3 interrupted bindings, got %d", len(interrupted))
 	}
-	for _, taskID := range []string{"task-pending", "task-streaming"} {
+	for _, taskID := range []string{"task-pending", "task-streaming", "task-already-interrupted"} {
 		loaded, err := store.GetRemoteTaskBinding(ctx, taskID)
 		if err != nil {
 			t.Fatalf("get binding %s: %v", taskID, err)
