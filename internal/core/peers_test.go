@@ -120,6 +120,43 @@ func TestSyncPeerTargetsMarksPreviouslyOnlinePeerOfflineOnProbeFailure(t *testin
 	}
 }
 
+func TestSyncAllPeerTargetsContinuesAfterPeerFailure(t *testing.T) {
+	ctx := context.Background()
+	orchestrator, store := setupPeerTestOrchestrator(t)
+	peerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/node/health":
+			_ = json.NewEncoder(w).Encode(nodeproto.NodeHealthResponse{NodeID: "node-c", OK: true})
+		case "/v1/targets":
+			_ = json.NewEncoder(w).Encode(map[string]any{"targets": []atypes.RuntimeSpec{{TargetID: "healthy", Owner: atypes.TargetOwnerLocal}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer peerServer.Close()
+
+	if _, err := orchestrator.AddPeer(ctx, atypes.PeerUpsertRequest{PeerID: "peer-b", BaseURL: "http://127.0.0.1:1"}); err != nil {
+		t.Fatalf("add failed peer: %v", err)
+	}
+	if _, err := orchestrator.AddPeer(ctx, atypes.PeerUpsertRequest{PeerID: "peer-c", BaseURL: peerServer.URL}); err != nil {
+		t.Fatalf("add healthy peer: %v", err)
+	}
+	responses, err := orchestrator.SyncAllPeerTargets(ctx)
+	if err == nil {
+		t.Fatal("expected partial sync error")
+	}
+	if len(responses) != 1 || responses[0].Peer.PeerID != "peer-c" {
+		t.Fatalf("expected healthy peer to sync after failed peer, got %+v", responses)
+	}
+	targets, err := store.ListPeerTargets(ctx)
+	if err != nil {
+		t.Fatalf("list peer targets: %v", err)
+	}
+	if len(targets) != 1 || targets[0].TargetID != "healthy" {
+		t.Fatalf("expected healthy peer target to be cached, got %+v", targets)
+	}
+}
+
 func TestBackgroundPeerSyncRefreshesCachedTargets(t *testing.T) {
 	ctx := context.Background()
 	orchestrator, store := setupPeerTestOrchestrator(t)
@@ -154,6 +191,52 @@ func TestBackgroundPeerSyncRefreshesCachedTargets(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("background sync did not cache peer target before timeout")
+}
+
+func TestBackgroundPeerSyncBoundsHungPeerAndContinues(t *testing.T) {
+	ctx := context.Background()
+	orchestrator, store := setupPeerTestOrchestrator(t)
+	oldTimeout := peerSyncRequestTimeout
+	peerSyncRequestTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { peerSyncRequestTimeout = oldTimeout })
+
+	hungPeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer hungPeer.Close()
+	healthyPeer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/node/health":
+			_ = json.NewEncoder(w).Encode(nodeproto.NodeHealthResponse{NodeID: "node-c", OK: true})
+		case "/v1/targets":
+			_ = json.NewEncoder(w).Encode(map[string]any{"targets": []atypes.RuntimeSpec{{TargetID: "after-hung", Owner: atypes.TargetOwnerLocal}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer healthyPeer.Close()
+
+	if _, err := orchestrator.AddPeer(ctx, atypes.PeerUpsertRequest{PeerID: "peer-b", BaseURL: hungPeer.URL}); err != nil {
+		t.Fatalf("add hung peer: %v", err)
+	}
+	if _, err := orchestrator.AddPeer(ctx, atypes.PeerUpsertRequest{PeerID: "peer-c", BaseURL: healthyPeer.URL}); err != nil {
+		t.Fatalf("add healthy peer: %v", err)
+	}
+	stop := orchestrator.StartPeerSyncLoop(ctx, 10*time.Millisecond, func(error) {})
+	defer stop()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		targets, err := store.ListPeerTargets(ctx)
+		if err != nil {
+			t.Fatalf("list peer targets: %v", err)
+		}
+		if len(targets) == 1 && targets[0].TargetID == "after-hung" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("background sync did not continue after hung peer")
 }
 
 func TestAddPeerRejectsNonHTTPBaseURL(t *testing.T) {

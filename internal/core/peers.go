@@ -16,6 +16,9 @@ var (
 	ErrPeerNotFound       = errors.New("peer not found")
 	ErrPeerIDRequired     = errors.New("peer_id required")
 	ErrPeerBaseURLInvalid = errors.New("peer base_url invalid")
+
+	// peerSyncRequestTimeout bounds peer discovery so one hung peer cannot freeze sync.
+	peerSyncRequestTimeout = 10 * time.Second
 )
 
 // AddPeer stores an operator-provided static peer without contacting runtimes.
@@ -128,14 +131,21 @@ func (o *Orchestrator) SyncAllPeerTargets(ctx context.Context) ([]atypes.PeerSyn
 		return nil, err
 	}
 	responses := make([]atypes.PeerSyncResponse, 0, len(peers))
+	syncErrs := make([]error, 0)
 	for _, peer := range peers {
-		response, err := o.SyncPeerTargets(ctx, peer.PeerID)
+		if err := ctx.Err(); err != nil {
+			return responses, err
+		}
+		peerCtx, cancel := context.WithTimeout(ctx, peerSyncRequestTimeout)
+		response, err := o.SyncPeerTargets(peerCtx, peer.PeerID)
+		cancel()
 		if err != nil {
-			return responses, fmt.Errorf("sync peer %s: %w", peer.PeerID, err)
+			syncErrs = append(syncErrs, fmt.Errorf("sync peer %s: %w", peer.PeerID, err))
+			continue
 		}
 		responses = append(responses, response)
 	}
-	return responses, nil
+	return responses, errors.Join(syncErrs...)
 }
 
 // StartPeerSyncLoop keeps cached peer target discovery warm without blocking plain reads.
