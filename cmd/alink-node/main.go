@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"flag"
 	"log"
 	"net/http"
+	"time"
 
 	"github.com/aethrolink/aethrolink-core/internal/adapters"
 	"github.com/aethrolink/aethrolink-core/internal/agents"
@@ -15,10 +17,11 @@ import (
 
 func main() {
 	var (
-		host        = flag.String("host", "127.0.0.1", "bind host")
-		port        = flag.String("port", "7777", "bind port")
-		databaseURL = flag.String("database", "sqlite://./aethrolink.db", "sqlite database path")
-		artifactDir = flag.String("artifact-dir", "artifacts", "artifact directory")
+		host             = flag.String("host", "127.0.0.1", "bind host")
+		port             = flag.String("port", "7777", "bind port")
+		databaseURL      = flag.String("database", "sqlite://./aethrolink.db", "sqlite database path")
+		artifactDir      = flag.String("artifact-dir", "artifacts", "artifact directory")
+		peerSyncInterval = flag.Duration("peer-sync-interval", 30*time.Second, "background static-peer target sync interval; set 0 to disable")
 	)
 	flag.Parse()
 	baseURL := "http://" + *host + ":" + *port
@@ -42,6 +45,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("create orchestrator: %v", err)
 	}
+	// Background sync keeps static-peer target caches fresh while plain reads stay cached.
+	stopPeerSync := orchestrator.StartPeerSyncLoop(context.Background(), *peerSyncInterval, func(err error) {
+		log.Printf("peer sync: %v", err)
+	})
+	defer stopPeerSync()
 	addr := *host + ":" + *port
 	log.Printf("aethrolink-go listening on http://%s", addr)
 	if err := http.ListenAndServe(addr, api.NewServer(orchestrator, agentService)); err != nil {

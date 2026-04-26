@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/aethrolink/aethrolink-core/internal/adaptersupport"
+	runtimemgr "github.com/aethrolink/aethrolink-core/internal/runtime"
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
 
@@ -24,7 +25,25 @@ func (a *ACPAdapter) EnsureReady(ctx context.Context, targetID string, options m
 	}
 	scopedSpec := spec
 	scopedSpec.Launch.Command = append([]string(nil), command...)
-	return a.host.EnsureRunning(ctx, scopedSpec, dialect.SubcontextKey(resolvedOptions))
+	subcontextKey := dialect.SubcontextKey(resolvedOptions)
+	lease, err := a.host.EnsureRunning(ctx, scopedSpec, subcontextKey)
+	if err != nil {
+		return atypes.RuntimeLease{}, err
+	}
+	// Process liveness is not ACP readiness; probe JSON-RPC before reusing a lease.
+	if err := a.transport.Initialize(ctx, targetID, subcontextKey, map[string]any{"protocolVersion": 1}, acpInitializeTimeout(resolvedOptions)); err != nil {
+		if !runtimemgr.IsRPCTimeout(err) {
+			return atypes.RuntimeLease{}, err
+		}
+		lease, err = a.host.EnsureRunning(ctx, scopedSpec, subcontextKey)
+		if err != nil {
+			return atypes.RuntimeLease{}, err
+		}
+		if err := a.transport.Initialize(ctx, targetID, subcontextKey, map[string]any{"protocolVersion": 1}, acpInitializeTimeout(resolvedOptions)); err != nil {
+			return atypes.RuntimeLease{}, err
+		}
+	}
+	return lease, nil
 }
 
 func (a *ACPAdapter) Submit(ctx context.Context, task atypes.TaskEnvelope, lease atypes.RuntimeLease) (atypes.RemoteHandle, error) {

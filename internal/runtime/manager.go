@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -16,6 +17,13 @@ import (
 	"github.com/aethrolink/aethrolink-core/internal/storage"
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
 )
+
+var ErrRPCTimeout = errors.New("rpc timeout")
+
+// IsRPCTimeout marks a hung JSON-RPC worker so adapters can reset stale leases.
+func IsRPCTimeout(err error) bool {
+	return errors.Is(err, ErrRPCTimeout)
+}
 
 type ManagedProcess struct {
 	cmd        *exec.Cmd
@@ -237,7 +245,10 @@ func (w *StdioWorker) RequestWithTimeout(method string, params map[string]any, t
 		}
 		return result, nil
 	case <-time.After(timeout):
-		return nil, fmt.Errorf("rpc timeout")
+		w.pendingMu.Lock()
+		delete(w.pending, id)
+		w.pendingMu.Unlock()
+		return nil, ErrRPCTimeout
 	case <-w.closed:
 		return nil, w.exitErr()
 	}

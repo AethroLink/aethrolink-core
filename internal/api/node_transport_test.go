@@ -157,6 +157,40 @@ func TestPeerSyncCachesDestinationTargetsAndEnablesOriginRelay(t *testing.T) {
 	}
 }
 
+func TestListTargetsRefreshSyncsPeerBeforeReturningTargets(t *testing.T) {
+	destination, _ := setupNodeTransportServer(t, "node-b")
+	origin, _, _ := setupNodeTransportServerWithoutAgents(t, "node-a")
+
+	peerBody := bytes.NewBufferString(`{"peer_id":"peer-b","display_name":"Node B","base_url":"` + destination.URL + `"}`)
+	addResp, err := http.Post(origin.URL+"/v1/peers", "application/json", peerBody)
+	if err != nil {
+		t.Fatalf("add peer: %v", err)
+	}
+	defer addResp.Body.Close()
+	if addResp.StatusCode != http.StatusCreated {
+		t.Fatalf("expected peer add 201, got %d", addResp.StatusCode)
+	}
+
+	// refresh=true makes the operator request pay the network cost explicitly.
+	resp, err := http.Get(origin.URL + "/v1/targets?refresh=true")
+	if err != nil {
+		t.Fatalf("list refreshed targets: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected refreshed targets 200, got %d", resp.StatusCode)
+	}
+	var listed struct {
+		Targets []atypes.RuntimeSpec `json:"targets"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&listed); err != nil {
+		t.Fatalf("decode refreshed targets: %v", err)
+	}
+	if len(listed.Targets) != 1 || listed.Targets[0].TargetID != "mock_hermes" || listed.Targets[0].Owner != atypes.TargetOwnerRemote {
+		t.Fatalf("expected refresh to sync remote mock_hermes, got %+v", listed.Targets)
+	}
+}
+
 func TestPeerSyncUnknownPeerReturnsNotFound(t *testing.T) {
 	origin, _, _ := setupNodeTransportServerWithoutAgents(t, "node-a")
 

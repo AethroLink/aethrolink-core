@@ -296,10 +296,15 @@ func (c cli) runTargets(args []string) error {
 	fs := flag.NewFlagSet("targets", flag.ContinueOnError)
 	fs.SetOutput(c.stderr)
 	server := fs.String("server", "http://127.0.0.1:7777", "alink-core base URL")
+	refresh := fs.Bool("refresh", false, "refresh static peer targets before listing")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
-	body, err := c.get(joinURL(*server, "/v1/targets"))
+	path := "/v1/targets"
+	if *refresh {
+		path = "/v1/targets?refresh=true"
+	}
+	body, err := c.get(joinURL(*server, path))
 	if err != nil {
 		return err
 	}
