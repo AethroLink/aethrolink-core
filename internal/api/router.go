@@ -505,6 +505,13 @@ func (s *Server) handleSyncPeer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleListTargets(w http.ResponseWriter, r *http.Request) {
+	// refresh=true makes peer probing explicit so normal target reads stay fast and offline-tolerant.
+	if r.URL.Query().Get("refresh") == "true" {
+		if _, err := s.orchestrator.SyncAllPeerTargets(r.Context()); err != nil {
+			writeError(w, core.ErrorStatus(err), err)
+			return
+		}
+	}
 	targets, err := s.orchestrator.ListTargets(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err)

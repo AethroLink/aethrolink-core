@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"time"
 
 	"github.com/aethrolink/aethrolink-core/internal/nodetransport"
 	atypes "github.com/aethrolink/aethrolink-core/pkg/types"
@@ -118,6 +119,46 @@ func (o *Orchestrator) SyncPeerTargets(ctx context.Context, peerID string) (atyp
 		return atypes.PeerSyncResponse{}, err
 	}
 	return atypes.PeerSyncResponse{Peer: peer, Targets: cached}, nil
+}
+
+// SyncAllPeerTargets refreshes every registered peer into the local discovery cache.
+func (o *Orchestrator) SyncAllPeerTargets(ctx context.Context) ([]atypes.PeerSyncResponse, error) {
+	peers, err := o.store.ListPeers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	responses := make([]atypes.PeerSyncResponse, 0, len(peers))
+	for _, peer := range peers {
+		response, err := o.SyncPeerTargets(ctx, peer.PeerID)
+		if err != nil {
+			return responses, fmt.Errorf("sync peer %s: %w", peer.PeerID, err)
+		}
+		responses = append(responses, response)
+	}
+	return responses, nil
+}
+
+// StartPeerSyncLoop keeps cached peer target discovery warm without blocking plain reads.
+func (o *Orchestrator) StartPeerSyncLoop(ctx context.Context, interval time.Duration, onError func(error)) func() {
+	if interval <= 0 {
+		return func() {}
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-loopCtx.Done():
+				return
+			case <-ticker.C:
+				if _, err := o.SyncAllPeerTargets(loopCtx); err != nil && onError != nil {
+					onError(err)
+				}
+			}
+		}
+	}()
+	return cancel
 }
 
 // markPeerOfflineAfterSyncFailure records failed peer probes for operator-visible liveness.

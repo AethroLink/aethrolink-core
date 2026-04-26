@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/aethrolink/aethrolink-core/internal/nodeproto"
 	"github.com/aethrolink/aethrolink-core/internal/storage"
@@ -117,6 +118,42 @@ func TestSyncPeerTargetsMarksPreviouslyOnlinePeerOfflineOnProbeFailure(t *testin
 	if peer.Status != atypes.PeerStatusOffline {
 		t.Fatalf("expected failed sync to mark peer offline, got %q", peer.Status)
 	}
+}
+
+func TestBackgroundPeerSyncRefreshesCachedTargets(t *testing.T) {
+	ctx := context.Background()
+	orchestrator, store := setupPeerTestOrchestrator(t)
+	exported := []atypes.RuntimeSpec{{TargetID: "background", Owner: atypes.TargetOwnerLocal}}
+	peerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/node/health":
+			_ = json.NewEncoder(w).Encode(nodeproto.NodeHealthResponse{NodeID: "node-b", OK: true})
+		case "/v1/targets":
+			_ = json.NewEncoder(w).Encode(map[string]any{"targets": exported})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer peerServer.Close()
+
+	if _, err := orchestrator.AddPeer(ctx, atypes.PeerUpsertRequest{PeerID: "peer-b", BaseURL: peerServer.URL}); err != nil {
+		t.Fatalf("add peer: %v", err)
+	}
+	stop := orchestrator.StartPeerSyncLoop(ctx, 10*time.Millisecond, func(error) {})
+	defer stop()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		targets, err := store.ListPeerTargets(ctx)
+		if err != nil {
+			t.Fatalf("list peer targets: %v", err)
+		}
+		if len(targets) == 1 && targets[0].TargetID == "background" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("background sync did not cache peer target before timeout")
 }
 
 func TestAddPeerRejectsNonHTTPBaseURL(t *testing.T) {

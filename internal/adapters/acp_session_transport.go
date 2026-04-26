@@ -22,7 +22,7 @@ func (t *acpSessionTransport) Initialize(ctx context.Context, targetID, subconte
 	if err != nil {
 		return err
 	}
-	_, err = worker.RequestWithTimeout("initialize", payload, timeout)
+	_, err = t.request(ctx, worker, targetID, subcontextKey, "initialize", payload, timeout)
 	return err
 }
 
@@ -31,7 +31,7 @@ func (t *acpSessionTransport) OpenSession(ctx context.Context, targetID, subcont
 	if err != nil {
 		return "", err
 	}
-	result, err := worker.RequestWithTimeout("session/new", payload, timeout)
+	result, err := t.request(ctx, worker, targetID, subcontextKey, "session/new", payload, timeout)
 	if err != nil {
 		return "", err
 	}
@@ -43,7 +43,7 @@ func (t *acpSessionTransport) LoadSession(ctx context.Context, targetID, subcont
 	if err != nil {
 		return "", err
 	}
-	result, err := worker.RequestWithTimeout("session/load", payload, timeout)
+	result, err := t.request(ctx, worker, targetID, subcontextKey, "session/load", payload, timeout)
 	if err != nil {
 		return "", err
 	}
@@ -59,7 +59,7 @@ func (t *acpSessionTransport) Prompt(ctx context.Context, targetID, subcontextKe
 	if err != nil {
 		return err
 	}
-	_, err = worker.RequestWithTimeout("session/prompt", payload, timeout)
+	_, err = t.request(ctx, worker, targetID, subcontextKey, "session/prompt", payload, timeout)
 	return err
 }
 
@@ -68,7 +68,7 @@ func (t *acpSessionTransport) Resume(ctx context.Context, targetID, subcontextKe
 	if err != nil {
 		return err
 	}
-	_, err = worker.RequestWithTimeout("session/resume", payload, 20*time.Second)
+	_, err = t.request(ctx, worker, targetID, subcontextKey, "session/resume", payload, 20*time.Second)
 	return err
 }
 
@@ -77,8 +77,17 @@ func (t *acpSessionTransport) Cancel(ctx context.Context, targetID, subcontextKe
 	if err != nil {
 		return err
 	}
-	_, err = worker.RequestWithTimeout("session/cancel", map[string]any{"sessionId": sessionID}, 20*time.Second)
+	_, err = t.request(ctx, worker, targetID, subcontextKey, "session/cancel", map[string]any{"sessionId": sessionID}, 20*time.Second)
 	return err
+}
+
+func (t *acpSessionTransport) request(ctx context.Context, worker *runtime.StdioWorker, targetID, subcontextKey, method string, payload map[string]any, timeout time.Duration) (map[string]any, error) {
+	result, err := worker.RequestWithTimeout(method, payload, timeout)
+	if runtime.IsRPCTimeout(err) {
+		// A live process can still stop answering ACP; remove it so the next call relaunches.
+		_ = t.manager.Stop(ctx, targetID, subcontextKey)
+	}
+	return result, err
 }
 
 func (t *acpSessionTransport) Stream(ctx context.Context, targetID, subcontextKey string) (<-chan map[string]any, func(), error) {

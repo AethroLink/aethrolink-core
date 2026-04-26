@@ -883,11 +883,14 @@ Rules:
 - cached targets are stored as `PeerTargetRecord` rows and then appear in `GET /v1/targets` with `owner: "remote"`
 - target payloads from the destination are copied into cache metadata/default fields but remain owned by the peer
 - a failed sync returns a control-plane error; existing cached targets are not treated as proof of current liveness
+- `GET /v1/targets` normally returns the cached local view; `GET /v1/targets?refresh=true` first syncs all registered peers, then returns the refreshed mixed target view
+- `alink-node --peer-sync-interval <duration>` runs the same cache refresh in the background; the default is `30s`, and `0` disables background peer sync
 
 CLI workflow:
 
 ```bash
 alink-cli peer-add --server http://127.0.0.1:7777 --peer-id node-b --base-url http://127.0.0.1:9092 --display-name "Research node"
+alink-cli targets --server http://127.0.0.1:7777 --refresh
 alink-cli peer-sync --server http://127.0.0.1:7777 --peer-id node-b
 alink-cli targets --server http://127.0.0.1:7777
 ```

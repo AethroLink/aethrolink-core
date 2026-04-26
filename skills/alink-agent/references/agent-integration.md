@@ -42,11 +42,82 @@ command -v alink-cli
 
 Agents should prefer the PATH-installed CLI over raw HTTP calls.
 
+### CLI version mismatch
+
+If a command such as `peer-add`, `peer-list`, `peer-sync`, or `targets --refresh`
+returns `unknown command` or `flag provided but not defined`, the agent is likely
+calling an older `alink-cli` on `PATH`.
+
+Check both the PATH binary and the freshly built repo binary:
+
+```bash
+command -v alink-cli
+alink-cli 2>&1 | head -n 1
+/tmp/aethrolink-phase8/alink-cli 2>&1 | head -n 1
+```
+
+Repair the PATH binary from the current repo before continuing:
+
+```bash
+cd /Users/clawuser/Desktop/AETH/aethrolink-core
+go build -o ~/.local/bin/alink-cli ./cmd/alink-cli
+```
+
+Do not debug peer workflow behavior until the CLI help output includes
+`peer-add`, `peer-list`, `peer-sync`, and `targets --refresh`.
+
 ## 2. Key Terms
+
+### Node
+
+An AethroLink server process, usually started with `alink-node`.
+
+For local two-node testing:
+
+- Node A is usually `http://127.0.0.1:7777`
+- Node B is usually `http://127.0.0.1:7778`
+
+Each node has its own SQLite database, artifact directory, registered local
+agents, and cached view of remote peer targets.
+
+### Peer
+
+A peer is another AethroLink node registered in the local node's static-peer
+registry.
+
+Example: when Node A registers Node B as `node-b`, Node B becomes a peer from
+Node A's point of view.
+
+```bash
+alink-cli peer-add \
+  --server http://127.0.0.1:7777 \
+  --peer-id node-b \
+  --base-url http://127.0.0.1:7778 \
+  --display-name "Node B"
+```
+
+`peer_id` is the local name for that remote node. It is not an agent id.
+
+The controller of the origin node adds peers. In practice, that can be a human,
+this outer Hermes/aethrolink-agent session, a dashboard/backend service, or later
+authorized automation. It is not Node B registering itself, the remote agent
+registering itself with Node A, or Hermes/OpenClaw adapter logic.
+
+Peer registration is one-way. If Node A adds Node B, only Node A's `peers` table
+changes. Node B does not automatically learn about Node A. To make Node B know
+Node A, add the reverse peer explicitly:
+
+```bash
+alink-cli peer-add \
+  --server http://127.0.0.1:7778 \
+  --peer-id node-a \
+  --base-url http://127.0.0.1:7777 \
+  --display-name "Node A"
+```
 
 ### Agent
 
-A registered executable participant known to the node.
+A registered executable participant known to a node.
 
 Examples:
 
@@ -66,13 +137,49 @@ An agent record includes:
 - `capabilities`
 - `sticky_mode`
 
+### Local agent
+
+A local agent is registered on the node you are querying. The node can launch or
+reuse this runtime directly through its local adapter stack.
+
+Example: if `aethrolink-agent` is registered on Node A, then Node A shows it as:
+
+```json
+{ "target_id": "aethrolink-agent", "owner": "local" }
+```
+
+### Remote agent / peer-owned target
+
+A remote agent is not launched by the current node. It is a target exported by a
+peer node and cached locally as a `peer_target`.
+
+Example: if `videographer` is registered on Node B and Node A syncs `node-b`,
+then Node A shows it as:
+
+```json
+{
+  "target_id": "videographer",
+  "owner": "remote",
+  "peer_id": "node-b",
+  "peer_base_url": "http://127.0.0.1:7778"
+}
+```
+
+When Node A submits work to this remote target, Node A creates the
+operator-facing proxy task, relays the task to Node B, and Node B executes it
+through its own local adapter. Runtime adapters remain local-only.
+
 ### Target
 
 The node-facing execution target used for task routing.
 
-In the current architecture, a runtime is derived from a registered agent
-record. The registered agent's `agent_id` is the direct machine-facing
-identifier used when submitting tasks.
+A target can be:
+
+- local: directly registered on this node
+- remote: cached from a peer node after peer sync or refresh
+
+In the current architecture, local runtime targets are derived from registered
+agent records. Remote targets are derived from cached `peer_targets` records.
 
 Examples:
 
@@ -80,6 +187,8 @@ Examples:
 - `research`
 - `gateway`
 - `gemini`
+- `videographer`
+- `openclaw_main`
 
 ### Intent
 
@@ -162,13 +271,32 @@ Use:
 ```bash
 alink-cli agents --server http://127.0.0.1:7777
 alink-cli targets --server http://127.0.0.1:7777
+alink-cli targets --server http://127.0.0.1:7777 --refresh
 ```
 
 Use `agents` when you want full registered-agent records.
 
-Use `targets` when you want the node-facing execution targets available for
-task routing. Today those target identifiers are the registered agents'
-`agent_id` values.
+Use plain `targets` when you want the node-facing execution targets available for
+task routing from the local cache. Use `targets --refresh` when you need the node
+to synchronously refresh all registered peer caches first.
+
+To list static peers registered on this node, use:
+
+```bash
+alink-cli peer-list --server http://127.0.0.1:7777
+```
+
+This calls `GET /v1/peers` and returns this node's local peer registry. It does
+not probe peer liveness or fetch peer targets.
+
+To refresh exactly one static peer cache, use:
+
+```bash
+alink-cli peer-sync --server http://127.0.0.1:7777 --peer-id node-b
+```
+
+The peer sync path calls that peer's `/v1/node/health` and `/v1/targets`, then
+updates the origin node's cached `peer_targets`.
 
 ## 5. Registration Workflow
 
@@ -250,10 +378,46 @@ Recommended times to heartbeat:
 - before submitting delegated tasks
 - on a periodic loop for long-lived agents
 
+### Heartbeat scope
+
+Heartbeat is only for the **sender agent** registered locally on the node you are calling.
+It is not target validation, and it is not remote-target discovery.
+
+Bad cross-node call from Node B:
+
+```bash
+alink-cli call \
+  --server http://127.0.0.1:7778 \
+  --target-agent-id aethrolink-agent \
+  --intent agent.runtime \
+  --text "Reply exactly OPENCLAW_SIMPLE_OK" \
+  --heartbeat
+```
+
+Why this fails:
+
+- without `--agent-id`, `call` reads the default state file for the sender id
+- if that state file contains `aethrolink-agent`, the CLI heartbeats `aethrolink-agent` on Node B
+- Node B only has `aethrolink-agent` as a remote cached target, not a local agent
+- `/v1/agents/aethrolink-agent/heartbeat` checks Node B's local agent table and returns `agent not found`
+
+Good cross-node call from Node B:
+
+```bash
+alink-cli call \
+  --server http://127.0.0.1:7778 \
+  --agent-id openclaw_main \
+  --target-agent-id aethrolink-agent \
+  --intent agent.runtime \
+  --text "Reply exactly OPENCLAW_SIMPLE_OK" \
+  --heartbeat
+```
+
+Rule: on cross-node calls, `--server` selects the origin node, `--agent-id` names a local sender on that origin node, and `--target-agent-id` may name a local or remote target.
+
 ## 7. Invocation Workflow
 
-Submit work through the node:
-
+Submit local-to-local work through the node:
 ```bash
 alink-cli call \
   --server http://127.0.0.1:7777 \
@@ -264,13 +428,33 @@ alink-cli call \
   --heartbeat
 ```
 
+Submit from a Node B local agent to a Node A remote target:
+```bash
+alink-cli call \
+  --server http://127.0.0.1:7778 \
+  --agent-id openclaw_main \
+  --target-agent-id aethrolink-agent \
+  --intent agent.runtime \
+  --text "Reply exactly OPENCLAW_SIMPLE_OK" \
+  --heartbeat
+```
+
+Do not omit `--agent-id` on cross-node calls when the default state file belongs
+to a different node. Otherwise `call --heartbeat` may try to heartbeat a remote
+peer-owned target on the local node and fail with `agent not found` before task
+submission. The known-bad shape is:
+
+```bash
+alink-cli call --server http://127.0.0.1:7778 --target-agent-id aethrolink-agent --intent agent.runtime --text "..." --heartbeat
+```
+
 What happens:
 
-- `sender` comes from the stored `agent_id`
-- `target-agent-id` selects the destination target
+- `sender` comes from `--agent-id` when provided, otherwise from the stored state file
+- `target-agent-id` selects the destination target, which may be local or remote
 - `intent` states the requested work category
 - `conversation-id` hints sticky reuse when supported
-- `--heartbeat` refreshes the sender lease before submission
+- `--heartbeat` refreshes the sender lease before submission and only works for local agents on the node being called
 
 ## 8. Retrieval Workflow
 

@@ -275,6 +275,27 @@ func TestAgentsAndTargetsCommands(t *testing.T) {
 	}
 }
 
+func TestTargetsRefreshFlagRequestsPeerRefresh(t *testing.T) {
+	var rawQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawQuery = r.URL.RawQuery
+		if r.URL.Path != "/v1/targets" {
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"targets": []map[string]any{{"agent_id": "core"}}})
+	}))
+	defer server.Close()
+
+	var out, errOut bytes.Buffer
+	if err := run([]string{"targets", "--server", server.URL, "--refresh"}, &out, &errOut); err != nil {
+		t.Fatalf("run targets refresh: %v", err)
+	}
+	if rawQuery != "refresh=true" {
+		t.Fatalf("expected refresh query, got %q", rawQuery)
+	}
+}
+
 func TestPeerCommandsUsePeerEndpoints(t *testing.T) {
 	var paths []string
 	var addBody map[string]any
