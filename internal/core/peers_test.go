@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -191,6 +192,48 @@ func TestBackgroundPeerSyncRefreshesCachedTargets(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("background sync did not cache peer target before timeout")
+}
+
+func TestSyncAllPeerTargetsMarksTimedOutPeerOffline(t *testing.T) {
+	ctx := context.Background()
+	orchestrator, store := setupPeerTestOrchestrator(t)
+	oldTimeout := peerSyncRequestTimeout
+	peerSyncRequestTimeout = 20 * time.Millisecond
+	t.Cleanup(func() { peerSyncRequestTimeout = oldTimeout })
+	var hang atomic.Bool
+	peerServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if hang.Load() {
+			<-r.Context().Done()
+			return
+		}
+		switch r.URL.Path {
+		case "/v1/node/health":
+			_ = json.NewEncoder(w).Encode(nodeproto.NodeHealthResponse{NodeID: "node-b", OK: true})
+		case "/v1/targets":
+			_ = json.NewEncoder(w).Encode(map[string]any{"targets": []atypes.RuntimeSpec{{TargetID: "initial", Owner: atypes.TargetOwnerLocal}}})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer peerServer.Close()
+
+	if _, err := orchestrator.AddPeer(ctx, atypes.PeerUpsertRequest{PeerID: "peer-b", BaseURL: peerServer.URL}); err != nil {
+		t.Fatalf("add peer: %v", err)
+	}
+	if _, err := orchestrator.SyncAllPeerTargets(ctx); err != nil {
+		t.Fatalf("sync peer online: %v", err)
+	}
+	hang.Store(true)
+	if _, err := orchestrator.SyncAllPeerTargets(ctx); err == nil {
+		t.Fatal("expected hung peer sync to fail")
+	}
+	peer, err := store.GetPeer(ctx, "peer-b")
+	if err != nil {
+		t.Fatalf("get peer after timed-out sync: %v", err)
+	}
+	if peer.Status != atypes.PeerStatusOffline {
+		t.Fatalf("expected timed-out peer to be marked offline, got %q", peer.Status)
+	}
 }
 
 func TestBackgroundPeerSyncBoundsHungPeerAndContinues(t *testing.T) {

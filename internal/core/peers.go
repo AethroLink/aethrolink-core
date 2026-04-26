@@ -63,6 +63,11 @@ func (o *Orchestrator) ListPeers(ctx context.Context) ([]atypes.PeerRecord, erro
 
 // SyncPeerTargets refreshes one peer's exported local targets into the cache.
 func (o *Orchestrator) SyncPeerTargets(ctx context.Context, peerID string) (atypes.PeerSyncResponse, error) {
+	return o.syncPeerTargets(ctx, ctx, peerID)
+}
+
+// syncPeerTargets keeps probe deadlines separate from liveness persistence.
+func (o *Orchestrator) syncPeerTargets(ctx context.Context, persistCtx context.Context, peerID string) (atypes.PeerSyncResponse, error) {
 	peer, err := o.store.GetPeer(ctx, peerID)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
@@ -73,14 +78,14 @@ func (o *Orchestrator) SyncPeerTargets(ctx context.Context, peerID string) (atyp
 	client := nodetransport.NewHTTPClient(peer.BaseURL, o.nodeID, nil)
 	health, err := client.Health(ctx)
 	if err != nil {
-		if offlineErr := o.markPeerOfflineAfterSyncFailure(ctx, peer); offlineErr != nil {
+		if offlineErr := o.markPeerOfflineAfterSyncFailure(persistCtx, peer); offlineErr != nil {
 			return atypes.PeerSyncResponse{}, offlineErr
 		}
 		return atypes.PeerSyncResponse{}, fmt.Errorf("peer health: %w", err)
 	}
 	targets, err := client.ListTargets(ctx)
 	if err != nil {
-		if offlineErr := o.markPeerOfflineAfterSyncFailure(ctx, peer); offlineErr != nil {
+		if offlineErr := o.markPeerOfflineAfterSyncFailure(persistCtx, peer); offlineErr != nil {
 			return atypes.PeerSyncResponse{}, offlineErr
 		}
 		return atypes.PeerSyncResponse{}, fmt.Errorf("peer targets: %w", err)
@@ -137,7 +142,7 @@ func (o *Orchestrator) SyncAllPeerTargets(ctx context.Context) ([]atypes.PeerSyn
 			return responses, err
 		}
 		peerCtx, cancel := context.WithTimeout(ctx, peerSyncRequestTimeout)
-		response, err := o.SyncPeerTargets(peerCtx, peer.PeerID)
+		response, err := o.syncPeerTargets(peerCtx, ctx, peer.PeerID)
 		cancel()
 		if err != nil {
 			syncErrs = append(syncErrs, fmt.Errorf("sync peer %s: %w", peer.PeerID, err))
